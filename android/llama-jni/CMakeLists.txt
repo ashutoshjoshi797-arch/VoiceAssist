@@ -24,9 +24,9 @@ if(LLAMA_CPP_DIR)
   add_subdirectory(${LLAMA_CPP_DIR} llama.cpp-build)
 else()
   include(FetchContent)
+  # (no DOWNLOAD_EXTRACT_TIMESTAMP: the Android SDK ships CMake 3.22, which doesn't know that option)
   FetchContent_Declare(llama_cpp
-    URL https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_CPP_TAG}.tar.gz
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    URL https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_CPP_TAG}.tar.gz)
   FetchContent_MakeAvailable(llama_cpp)
 endif()
 

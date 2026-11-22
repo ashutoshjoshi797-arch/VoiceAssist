@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoiceAssist</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%237c5cff'/%3E%3Crect x='25' y='14' width='14' height='24' rx='7' fill='white'/%3E%3Cpath d='M19 32a13 13 0 0 0 26 0' stroke='white' stroke-width='4' fill='none'/%3E%3Cpath d='M32 45v6' stroke='white' stroke-width='4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- ======================= Sign-in page ======================= -->
+<div id="auth-view" class="auth" hidden>
+  <section class="auth-brand">
+    <div class="brand big"><span class="brand-dot"></span><span>VoiceAssist</span></div>
+    <h1>Your AI assistant,<br>online or offline.</h1>
+    <ul class="auth-points">
+      <li><b>Talk naturally</b> — hands-free conversation, interrupt any time.</li>
+      <li><b>Works without internet</b> — even in airplane mode.</li>
+      <li><b>Private by design</b> — accounts and history stay on this computer.</li>
+    </ul>
+    <div class="orb-hero auth-orb"></div>
+  </section>
+
+  <section class="auth-card" aria-label="Sign in">
+    <div class="auth-tabs" role="tablist">
+      <button role="tab" id="tab-login" data-auth-tab="login" aria-selected="true">Log in</button>
+      <button role="tab" id="tab-signup" data-auth-tab="signup" aria-selected="false">Sign up</button>
+    </div>
+
+    <!-- Log in -->
+    <form class="auth-form" id="form-login" data-auth-panel="login" novalidate autocomplete="on">
+      <h2>Welcome back</h2>
+      <p class="muted small">Log in to continue your conversations.</p>
+      <label class="field"><span>Username</span>
+        <input name="username" autocomplete="username" required autofocus spellcheck="false"></label>
+      <label class="field"><span>Password</span>
+        <div class="pw-wrap"><input name="password" type="password" autocomplete="current-password" required>
+          <button type="button" class="pw-eye" tabindex="-1" aria-label="Show password">Show</button></div></label>
+      <div class="auth-row">
+        <label class="check"><input type="checkbox" name="remember" checked> Keep me signed in</label>
+        <a href="#" class="link" id="link-forgot">Forgot password?</a>
+      </div>
+      <div class="auth-error" role="alert"></div>
+      <button class="btn primary wide" type="submit">Log in</button>
+      <p class="auth-switch muted small">New here? <a href="#" class="link" data-goto="signup">Create an account</a></p>
+    </form>
+
+    <!-- Sign up -->
+    <form class="auth-form" id="form-signup" data-auth-panel="signup" novalidate autocomplete="on" hidden>
+      <h2>Create your account</h2>
+      <p class="muted small" id="signup-note">Your account is stored only on this computer.</p>
+      <label class="field"><span>Your name</span>
+        <input name="display_name" autocomplete="name" maxlength="60" placeholder="e.g. Mohit"></label>
+      <label class="field"><span>Username</span>
+        <input name="username" autocomplete="username" required spellcheck="false" maxlength="32" placeholder="3–32 letters, numbers, . - _"></label>
+      <label class="field"><span>Email <em class="muted">(optional)</em></span>
+        <input name="email" type="email" autocomplete="email" maxlength="254"></label>
+      <label class="field"><span>Password</span>
+        <div class="pw-wrap"><input name="password" type="password" autocomplete="new-password" required>
+          <button type="button" class="pw-eye" tabindex="-1" aria-label="Show password">Show</button></div>
+        <div class="pw-meter" aria-hidden="true"><i></i></div>
+        <small class="muted" id="pw-hint">At least 8 characters, with a letter and a number or symbol.</small></label>
+      <label class="field"><span>Confirm password</span>
+        <input name="confirm" type="password" autocomplete="new-password" required></label>
+      <label class="check"><input type="checkbox" name="remember" checked> Keep me signed in</label>
+      <div class="auth-error" role="alert"></div>
+      <button class="btn primary wide" type="submit">Create account</button>
+      <p class="auth-switch muted small">Already have an account? <a href="#" class="link" data-goto="login">Log in</a></p>
+    </form>
+
+    <!-- Forgot password -->
+    <form class="auth-form" id="form-recover" data-auth-panel="recover" novalidate hidden>
+      <h2>Reset your password</h2>
+      <p class="muted small">Enter the recovery code you saved when you created your account.</p>
+      <label class="field"><span>Username</span><input name="username" autocomplete="username" required spellcheck="false"></label>
+      <label class="field"><span>Recovery code</span><input name="code" required spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" class="mono"></label>
+      <label class="field"><span>New password</span>
+        <div class="pw-wrap"><input name="new_password" type="password" autocomplete="new-password" required>
+          <button type="button" class="pw-eye" tabindex="-1" aria-label="Show password">Show</button></div></label>
+      <label class="field"><span>Confirm new password</span><input name="confirm" type="password" autocomplete="new-password" required></label>
+      <div class="auth-error" role="alert"></div>
+      <button class="btn primary wide" type="submit">Reset password</button>
+      <p class="auth-switch muted small"><a href="#" class="link" data-goto="login">← Back to log in</a></p>
+    </form>
+  </section>
+</div>
+
+<!-- Recovery code (shown once) -->
+<dialog id="recovery-dialog" class="modal" aria-labelledby="rc-title">
+  <h2 id="rc-title">Save your recovery code</h2>
+  <p>If you forget your password, this code is the <b>only</b> way to get back into your account — there's no email reset because everything stays on this computer. It's shown only once.</p>
+  <div class="rc-code mono" id="rc-code"></div>
+  <div class="row">
+    <button class="btn" type="button" id="rc-copy">Copy</button>
+    <button class="btn" type="button" id="rc-download">Download .txt</button>
+  </div>
+  <label class="check"><input type="checkbox" id="rc-saved"> I've saved my recovery code somewhere safe</label>
+  <button class="btn primary wide" type="button" id="rc-continue" disabled>Continue</button>
+</dialog>
+
+<!-- One-click offline setup -->
+<dialog id="setup-dialog" class="modal" aria-labelledby="setup-title">
+  <h2 id="setup-title">Set up offline mode</h2>
+  <p id="setup-intro">Download the AI that runs on this computer, so VoiceAssist keeps working without internet, even in airplane mode. This is a one-time download; please stay online until it finishes.</p>
+  <label class="field" id="setup-model-field"><span>AI model</span><select id="setup-model"></select></label>
+  <div class="setup-progress" id="setup-progress" hidden>
+    <div class="bar"><i id="setup-bar"></i></div>
+    <div class="muted small" id="setup-step"></div>
+  </div>
+  <div class="row setup-actions">
+    <button class="btn primary" type="button" id="setup-go">Download &amp; install</button>
+    <button class="btn" type="button" id="setup-later">Later</button>
+  </div>
+</dialog>
+
+<div id="app" class="app" hidden>
+  <!-- ======================= Top bar ======================= -->
+  <header class="topbar">
+    <button class="icon-btn only-narrow" id="btn-sidebar" title="Conversations" aria-label="Show conversations">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <div class="brand">
+      <span class="brand-dot"></span><span>VoiceAssist</span>
+    </div>
+
+    <div id="net-pill" class="net-pill unknown" title="Checking network…" role="status" aria-live="polite">
+      <span class="net-icon" id="net-icon"></span>
+      <span id="net-label">CHECKING</span>
+    </div>
+
+    <div class="route" id="route-label" title="">—</div>
+
+    <div class="spacer"></div>
+
+    <div class="seg offline-feature" id="mode-seg" role="radiogroup" aria-label="Model mode">
+      <button data-mode="auto" role="radio" title="Use the cloud model when the internet is available, local model otherwise">Auto</button>
+      <button data-mode="local" role="radio" title="Never use the cloud — everything stays on this computer">Local only</button>
+    </div>
+
+    <label class="model-select">
+      <span class="sr-only">AI model</span>
+      <select id="model-select" title="AI model"></select>
+    </label>
+
+    <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+  </header>
+
+  <div class="body">
+    <!-- ======================= Sidebar ======================= -->
+    <aside class="sidebar" id="sidebar">
+      <button class="btn primary wide" id="btn-new">+ New conversation</button>
+      <div class="side-title">History</div>
+      <ul class="conv-list" id="conv-list"></ul>
+      <div class="side-foot">
+        <div class="user-chip-wrap">
+          <button class="user-chip" id="user-chip" aria-haspopup="menu" aria-expanded="false" title="Account">
+            <span class="avatar" id="user-avatar">?</span>
+            <span class="user-names"><b id="user-name">—</b><small id="user-handle"></small></span>
+            <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+          </button>
+          <div class="user-menu" id="user-menu" role="menu" hidden>
+            <button role="menuitem" id="menu-account">Account settings</button>
+            <button role="menuitem" id="menu-logout">Log out</button>
+          </div>
+        </div>
+        <span id="history-mode" class="muted small"></span>
+        <button class="btn ghost small" id="btn-clear-history">Clear all history</button>
+      </div>
+    </aside>
+
+    <!-- ======================= Main ======================= -->
+    <main class="main">
+      <div id="banners" class="banners" aria-live="polite"></div>
+
+      <section class="transcript" id="transcript" aria-label="Conversation">
+        <div class="empty" id="empty-state">
+          <div class="orb-hero"></div>
+          <h1>Talk to your AI — online or offline</h1>
+          <p>Press the microphone and start speaking. In <b>Hands-free</b> mode I listen continuously and you can interrupt me any time. <span class="kbd-hint">Hold <kbd>Space</kbd> in <b>Push-to-talk</b> mode.</span><span class="touch-hint">In <b>Push-to-talk</b> mode, hold the mic button while you speak.</span></p>
+        </div>
+      </section>
+
+      <footer class="dock">
+        <div class="voice-panel" id="voice-panel" hidden>
+        <div class="wave-wrap">
+          <canvas id="wave" height="72" aria-hidden="true"></canvas>
+          <div class="live-caption" id="live-caption"></div>
+        </div>
+
+        <div class="controls">
+          <div class="seg small" id="style-seg" role="radiogroup" aria-label="Conversation style">
+            <button data-style="handsfree" role="radio">Hands-free</button>
+            <button data-style="ptt" role="radio">Push-to-talk</button>
+          </div>
+
+          <button class="round-btn" id="btn-mute" title="Mute microphone (M)" aria-label="Mute microphone">
+            <svg class="i-on" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            <svg class="i-off" viewBox="0 0 24 24"><path d="M3 3l18 18M9 9v2a3 3 0 0 0 5.1 2.1M15 9.3V6a3 3 0 0 0-5.7-1.3M5 11a7 7 0 0 0 11.5 5.4M19 11a7 7 0 0 1-.6 2.8M12 18v3"/></svg>
+          </button>
+
+          <button class="mic" id="btn-mic" aria-label="Start listening" title="Start / stop listening">
+            <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span>
+            <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </button>
+
+          <button class="round-btn" id="btn-stop" title="Stop speaking (Esc)" aria-label="Stop speaking" disabled>
+            <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          </button>
+
+          <div class="mic-state" id="mic-state">Microphone off</div>
+        </div>
+        </div>
+
+        <form class="text-input" id="text-form" autocomplete="off">
+          <input id="text-in" type="text" placeholder="Type a message, or open the voice controls" aria-label="Type a message">
+          <button class="voice-toggle" id="btn-voice-toggle" type="button" aria-controls="voice-panel" aria-expanded="false" title="Show voice controls">
+            <svg class="vt-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            <svg class="vt-caret" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+            <span class="vt-dot" aria-hidden="true"></span>
+          </button>
+          <button class="btn" type="submit">Send</button>
+        </form>
+        <div class="privacy-line" id="privacy-line"></div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- ======================= Settings drawer ======================= -->
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  <aside class="drawer" id="drawer" aria-hidden="true" aria-label="Settings">
+    <div class="drawer-head">
+      <h2>Settings</h2>
+      <button class="icon-btn" id="btn-close-settings" aria-label="Close settings">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="account">Account</button>
+      <button data-tab="general" class="active">General</button>
+      <button data-tab="online">Online AI</button>
+      <button data-tab="local" class="offline-feature">Local AI</button>
+      <button data-tab="speech">Voice</button>
+      <button data-tab="audio">Audio</button>
+      <button data-tab="privacy">Privacy</button>
+      <button data-tab="diag" class="offline-feature">Diagnostics</button>
+    </nav>
+
+    <div class="tab-body">
+      <!-- General -->
+      <section data-panel="general" class="panel active">
+        <label class="field offline-feature"><span>Model mode</span>
+          <select data-setting="mode">
+            <option value="auto">Auto — cloud when online, local when offline</option>
+            <option value="local">Local only — never use the internet</option>
+          </select>
+        </label>
+        <label class="check offline-feature"><input type="checkbox" data-setting="auto_switch_back"> When the internet returns, switch back to the cloud model automatically (otherwise I'll ask)</label>
+        <label class="check offline-feature"><input type="checkbox" data-setting="strict_offline"> Strict offline: block every network connection from this app (no connectivity checks)</label>
+        <label class="field"><span>Assistant instructions (system prompt)</span>
+          <textarea rows="5" data-setting="assistant.system_prompt"></textarea>
+        </label>
+        <div class="kv" id="net-details"></div>
+        <button class="btn" id="btn-recheck">Re-check network now</button>
+      </section>
+
+      <!-- Online -->
+      <section data-panel="online" class="panel">
+        <label class="field"><span>Cloud provider</span>
+          <select data-setting="online.provider">
+            <option value="anthropic">Claude (Anthropic)</option>
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Gemini (Google)</option>
+          </select>
+        </label>
+        <label class="field"><span>Claude model</span><input list="dl-anthropic" data-setting="online.models.anthropic"></label>
+        <label class="field"><span>OpenAI model</span><input list="dl-openai" data-setting="online.models.openai"></label>
+        <label class="field"><span>Gemini model</span><input list="dl-gemini" data-setting="online.models.gemini"></label>
+        <datalist id="dl-anthropic"></datalist><datalist id="dl-openai"></datalist><datalist id="dl-gemini"></datalist>
+
+        <h3>API keys</h3>
+        <p class="muted small desktop-only">Keys are stored in the Windows Credential Manager (or read from the <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code> environment variables). They are never written to the settings file.</p>
+        <p class="muted small web-only">Your keys are saved only in this browser, for your account, and are sent only to the provider they belong to. Get one at <a class="link" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic</a>, <a class="link" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI</a> or <a class="link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. An OpenAI or Gemini key also gives the best voice recognition.</p>
+        <div class="key-row" data-provider="anthropic"><span>Claude</span><input type="password" placeholder="sk-ant-…"><button class="btn small">Save</button><em></em></div>
+        <div class="key-row" data-provider="openai"><span>OpenAI</span><input type="password" placeholder="sk-…"><button class="btn small">Save</button><em></em></div>
+        <div class="key-row" data-provider="gemini"><span>Gemini</span><input type="password" placeholder="AIza…"><button class="btn small">Save</button><em></em></div>
+
+        <div class="desktop-only"><h3>Cloud speech (optional)</h3>
+        <label class="check"><input type="checkbox" data-setting="online.cloud_stt"> Use OpenAI speech recognition when online (needs OpenAI key)</label>
+        <label class="check"><input type="checkbox" data-setting="online.cloud_tts"> Use OpenAI voice when online (needs OpenAI key)</label>
+        <label class="field"><span>OpenAI transcription model</span><input data-setting="online.openai_stt_model"></label>
+        <label class="field"><span>OpenAI voice model / voice</span>
+          <div class="row"><input data-setting="online.openai_tts_model"><input data-setting="online.openai_tts_voice"></div>
+        </label>
+        </div>
+        <label class="field"><span>Max answer length (tokens)</span><input type="number" min="64" max="8192" data-setting="online.max_output_tokens"></label>
+      </section>
+
+      <!-- Local -->
+      <section data-panel="local" class="panel">
+        <div class="setup-card" id="setup-card">
+          <div><b>Offline AI</b><div class="muted small" id="setup-card-status">Checking…</div></div>
+          <button class="btn primary small" id="btn-open-setup">Set up offline AI</button>
+        </div>
+        <label class="field desktop-only"><span>Local engine</span>
+          <select data-setting="local.engine">
+            <option value="ollama">Ollama (recommended)</option>
+            <option value="openai_compat">OpenAI-compatible server (llama.cpp, LM Studio)</option>
+          </select>
+        </label>
+        <label class="field"><span>Local model</span>
+          <div class="row"><select id="local-model-select"></select><button class="btn small" id="btn-refresh-local">Refresh</button></div>
+        </label>
+        <div id="local-status" class="kv"></div>
+        <div class="muted small" id="local-reco"></div>
+        <label class="field desktop-only"><span>Ollama address</span><input data-setting="local.ollama_url"></label>
+        <label class="field desktop-only"><span>OpenAI-compatible server address</span><input data-setting="local.openai_compat_url"></label>
+        <label class="field"><span>Context window (tokens) — lower uses less RAM</span><input type="number" min="1024" max="131072" step="512" data-setting="local.num_ctx"></label>
+        <label class="field desktop-only"><span>Keep model in memory for</span><input data-setting="local.keep_alive" placeholder="30m"></label>
+        <label class="check"><input type="checkbox" data-setting="local.preload"> Load the local model at startup (faster first offline answer, uses RAM)</label>
+        <label class="check desktop-only"><input type="checkbox" data-setting="local.allow_lan"> Allow a local engine on my LAN (not just this computer)</label>
+        <button class="btn" id="btn-preload">Load local model now</button>
+      </section>
+
+      <!-- Speech -->
+      <section data-panel="speech" class="panel">
+        <div class="web-only">
+          <h3>Voice input</h3>
+          <label class="field"><span>Recognise my speech with</span>
+            <select data-setting="web.stt">
+              <option value="auto">Automatic — OpenAI or Gemini if I added a key, otherwise Chrome</option>
+              <option value="openai">OpenAI (needs OpenAI key)</option>
+              <option value="gemini">Gemini (needs Gemini key)</option>
+              <option value="browser">Chrome speech recognition</option>
+            </select>
+          </label>
+          <label class="field"><span>Language</span><input data-setting="stt.language" placeholder="en"></label>
+          <h3>Voice output</h3>
+          <label class="field"><span>Speak answers with</span>
+            <select data-setting="web.tts">
+              <option value="browser">This browser's voice (free)</option>
+              <option value="openai">OpenAI voice (needs OpenAI key)</option>
+              <option value="none">No voice (text only)</option>
+            </select>
+          </label>
+          <label class="field"><span>Browser voice</span><select data-setting="web.browser_voice" id="web-voice-select"></select></label>
+          <label class="field"><span>OpenAI voice</span><input data-setting="online.openai_tts_voice" placeholder="alloy"></label>
+        </div>
+        <div class="offline-feature">
+        <h3>Speech recognition (on-device Whisper)</h3>
+        <label class="field"><span>Model</span><select data-setting="stt.model" id="stt-model-select"></select></label>
+        <label class="field"><span>Language (multilingual models only)</span><input data-setting="stt.language" placeholder="en"></label>
+        <label class="field"><span>CPU threads (0 = auto)</span><input type="number" min="0" max="32" data-setting="stt.threads"></label>
+        <label class="field desktop-only"><span>Acceleration</span>
+          <select data-setting="stt.provider"><option value="cpu">CPU</option><option value="cuda">NVIDIA CUDA</option><option value="directml">DirectML (GPU)</option><option value="coreml">CoreML (Mac)</option></select>
+        </label>
+        <div id="stt-status" class="kv"></div>
+
+        <h3>Voice</h3>
+        <label class="field"><span>Voice engine</span>
+          <select data-setting="tts.engine">
+            <option value="piper">Piper neural voice (on-device)</option>
+            <option value="system" class="desktop-only">Windows / system voice (on-device)</option>
+            <option value="none">No voice (text only)</option>
+          </select>
+        </label>
+        <label class="field"><span>Piper voice</span><select data-setting="tts.voice" id="voice-select"></select></label>
+        <label class="field desktop-only"><span>System voice</span><select data-setting="tts.system_voice" id="sysvoice-select"></select></label>
+        </div>
+        <label class="field"><span>Speaking speed <b id="speed-val"></b></span><input type="range" min="0.6" max="1.6" step="0.05" data-setting="tts.speed"></label>
+        <button class="btn" id="btn-test-voice">▶ Test voice</button>
+        <div id="tts-status" class="kv"></div>
+      </section>
+
+      <!-- Audio -->
+      <section data-panel="audio" class="panel">
+        <label class="field"><span>Microphone</span><select id="mic-select"></select></label>
+        <label class="field"><span>Speaker</span><select id="spk-select"></select></label>
+        <p class="muted small" id="spk-note"></p>
+        <label class="field"><span>Voice detection sensitivity <b id="sens-val"></b></span><input type="range" min="0" max="1" step="0.05" data-setting="ui.vad_sensitivity"></label>
+        <label class="field"><span>End of speech after silence (ms)</span><input type="number" min="300" max="3000" step="50" data-setting="ui.silence_ms"></label>
+        <label class="check"><input type="checkbox" data-setting="ui.barge_in"> Let me interrupt the assistant by speaking</label>
+        <div class="meter"><span>Input level</span><div class="bar"><i id="level-bar"></i><b id="thresh-mark"></b></div></div>
+      </section>
+
+      <!-- Privacy -->
+      <section data-panel="privacy" class="panel">
+        <div class="privacy-box" id="privacy-box"></div>
+        <label class="check"><input type="checkbox" data-setting="privacy.save_history"> Save conversation history on this computer (applies after restart)</label>
+        <label class="check offline-feature"><input type="checkbox" data-setting="privacy.save_recordings"> Save my voice recordings to disk (off by default)</label>
+        <button class="btn danger" id="btn-clear-history-2">Delete all conversation history</button>
+        <div class="kv offline-feature" id="paths-box"></div>
+      </section>
+
+      <!-- Account -->
+      <section data-panel="account" class="panel">
+        <div class="kv" id="account-info"></div>
+        <h3>Profile</h3>
+        <form class="acct-form" id="form-profile" novalidate>
+          <label class="field"><span>Your name</span><input name="display_name" maxlength="60" required></label>
+          <label class="field"><span>Email (optional)</span><input name="email" type="email" maxlength="254"></label>
+          <div class="acct-msg"></div>
+          <button class="btn" type="submit">Save profile</button>
+        </form>
+        <h3>Change password</h3>
+        <form class="acct-form" id="form-password" novalidate>
+          <label class="field"><span>Current password</span><input name="current_password" type="password" autocomplete="current-password" required></label>
+          <label class="field"><span>New password</span><input name="new_password" type="password" autocomplete="new-password" required></label>
+          <label class="field"><span>Confirm new password</span><input name="confirm" type="password" autocomplete="new-password" required></label>
+          <div class="acct-msg"></div>
+          <button class="btn" type="submit">Change password</button>
+        </form>
+        <h3>Recovery code</h3>
+        <form class="acct-form" id="form-recovery" novalidate>
+          <p class="muted small">Lost your recovery code? Create a new one — the old code stops working.</p>
+          <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
+          <div class="acct-msg"></div>
+          <button class="btn" type="submit">Create new recovery code</button>
+        </form>
+        <h3>Session</h3>
+        <button class="btn" id="btn-logout">Log out</button>
+        <h3>Delete account</h3>
+        <form class="acct-form" id="form-delete" novalidate>
+          <p class="muted small">Permanently deletes this account and all of its conversation history from this computer.</p>
+          <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
+          <label class="check"><input type="checkbox" name="sure" required> I understand this can't be undone</label>
+          <div class="acct-msg"></div>
+          <button class="btn danger" type="submit">Delete my account</button>
+        </form>
+      </section>
+
+      <!-- Diagnostics -->
+      <section data-panel="diag" class="panel">
+        <p>Runs the complete voice loop using only on-device models: local voice → local Whisper → local LLM → local voice. Use this to confirm everything works before you go offline, and again in airplane mode.</p>
+        <button class="btn primary" id="btn-selftest">Run offline self-test</button>
+        <div id="selftest-out" class="selftest"></div>
+        <h3>Status</h3>
+        <pre id="diag-json" class="diag-json"></pre>
+        <button class="btn ghost desktop-only" id="btn-quit">Quit VoiceAssist</button>
+      </section>
+    </div>
+  </aside>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

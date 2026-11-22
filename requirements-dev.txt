@@ -1,0 +1,2 @@
+-r requirements.txt
+playwright>=1.45      # UI tests (tests/e2e_ui.py, tests/e2e_switch.py)

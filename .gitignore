@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+dist/
+android-test-output/
+packaging/windows/voiceassist.ico
+android/app/src/main/res/mipmap-*dpi/

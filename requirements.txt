@@ -1,0 +1,5 @@
+# Runtime dependencies — all have native Windows ARM64 (and x64) wheels for Python 3.12 / 3.13.
+sherpa-onnx==1.13.8   # on-device Whisper STT, Piper TTS, Silero VAD (ONNX Runtime). 2.x dropped Piper's phonemizer — keep 1.13.8.
+numpy>=2.0,<3
+keyring>=25           # API keys in Windows Credential Manager
+psutil>=6             # network adapter state for online/offline detection

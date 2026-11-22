@@ -106,8 +106,8 @@ def main(apk: str) -> int:
         return 1
     port = re.search(r":(\d+)/", url).group(1)
     token = url.split("token=")[-1]
-    adb("forward", "tcp:18765", f"tcp:{port}", check_rc=True)
-    api = Api("http://127.0.0.1:18765", token)
+    adb("forward", f"tcp:{port}", f"tcp:{port}", check_rc=True)   # same port number: the engine checks the Host header
+    api = Api(f"http://127.0.0.1:{port}", token)
 
     seen = ""
     for _ in range(30):
@@ -131,6 +131,9 @@ def main(apk: str) -> int:
     t0, last, s = time.time(), "", {}
     while time.time() - t0 < 40 * 60:
         st, s = api.json("GET", "/api/setup/status")
+        if st != 200:
+            print("   setup status error:", st, s, flush=True)
+            break
         job = s.get("job", {})
         if job.get("step") != last:
             last = job.get("step", "")

@@ -19,6 +19,17 @@ html = idx.read_text(encoding="utf-8")
 assert '<script src="app.js"></script>' in html
 html = html.replace('<script src="app.js"></script>', '<script src="web-engine.js"></script>\n<script src="app.js"></script>')
 html = html.replace("<title>VoiceAssist</title>", "<title>VoiceAssist — talk to AI in your browser</title>")
+# the website edition is online only: don't promise offline use on its pages
+for old, new in [
+    ("Your AI assistant,<br>online or offline.", "Your AI assistant,<br>right in your browser."),
+    ("<li><b>Works without internet</b> — even in airplane mode.</li>",
+     "<li><b>Nothing to install</b> — open the link and talk. For offline use, install the VoiceAssist app.</li>"),
+    ("Talk to your AI — online or offline", "Talk to your AI"),
+]:
+    assert old in html, old
+    html = html.replace(old, new)
+js = out / "app.js"
+js.write_text(js.read_text(encoding="utf-8").replace("Talk to your AI — online or offline", "Talk to your AI"), encoding="utf-8")
 idx.write_text(html, encoding="utf-8")
 (out / ".nojekyll").write_text("")
 print("website built in", out)

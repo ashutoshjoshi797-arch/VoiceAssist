@@ -16,6 +16,7 @@ from .engine import Engine, EventBus
 from .history import HistoryStore
 from .server import App, start_server
 
+WINDOW_GONE_S = 30 * 60
 log = logging.getLogger("voiceassist")
 
 
@@ -200,9 +201,18 @@ def main(argv=None) -> int:
 
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
+    # Time this computer has been awake since the window last pinged. Counted in small steps so a sleep / lid-close
+    # (when Windows pauses both the engine and the window) never looks like a missing window on wake-up.
+    awake_without_ping, seen_ping, tick = 0.0, app.last_ping, time.time()
     try:
         while not stop.is_set() and not app.shutdown_event.is_set():
             time.sleep(0.5)
+            now = time.time()
+            step, tick = now - tick, now
+            if app.last_ping != seen_ping:
+                seen_ping, awake_without_ping = app.last_ping, 0.0
+            elif 0 < step < 5:
+                awake_without_ping += step
             if proc is not None and proc.poll() is not None:
                 if time.time() - started < 8:
                     # the browser handed the window to an already-running browser process and exited at once:
@@ -215,9 +225,10 @@ def main(argv=None) -> int:
             if app.bye_at and time.time() - app.bye_at > 4 and app.last_ping < app.bye_at:
                 log.info("window closed (beacon)")
                 break
-            # Last resort: no window has pinged for 3 minutes (pings every 20 s; at most ~1/min when minimised)
-            if not a.no_window and time.time() - started > 180 and time.time() - app.last_ping > 180:
-                log.info("no window connected for 3 minutes — shutting down")
+            # Last resort (a crashed window): no ping for WINDOW_GONE_S of awake time. Pings come every 20 s, but a
+            # minimised or background window may be throttled or frozen for minutes, so this is deliberately long.
+            if not a.no_window and now - started > 180 and awake_without_ping > WINDOW_GONE_S:
+                log.info("no window connected for %d minutes — shutting down", WINDOW_GONE_S // 60)
                 break
     finally:
         app.shutdown_event.set()

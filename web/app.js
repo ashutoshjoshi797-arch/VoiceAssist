@@ -1248,6 +1248,8 @@ async function startApp(user, claimed) {
   setInterval(() => api("/api/ping", { method: "POST" }).catch(() => {}), 20000);
   addEventListener("pagehide", () => navigator.sendBeacon("/api/bye?token=" + encodeURIComponent(TOKEN)));
   api("/api/ping", { method: "POST" }).catch(() => {});
+  // back from sleep / minimised: tell the engine straight away that this window is still here
+  addEventListener("visibilitychange", () => { if (!document.hidden) api("/api/ping", { method: "POST" }).catch(() => {}); });
   wireAuth();
   let me;
   try {

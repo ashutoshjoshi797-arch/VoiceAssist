@@ -10,7 +10,7 @@ be determined the app simply runs locally):
 3. Reachability: a TCP connect (no data sent) to the cloud API host, or to the configured proxy.
 
 Routing policy ("auto" mode):
-* ONLINE + API key -> cloud provider.
+* ONLINE (and connected to the VoiceAssist cloud) -> cloud AI.
 * Not ONLINE -> local model. The switch is "pinned": when the internet returns the user is ASKED
   whether to switch back (or it switches automatically if auto_switch_back is enabled).
 """
@@ -25,7 +25,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from . import netutil, secrets_store
+from . import netutil
 
 log = logging.getLogger(__name__)
 
@@ -256,9 +256,11 @@ class ConnectionManager:
         self._emit("state")
 
     # -- routing ------------------------------------------------------------
+    #: set by the app: True when this build is connected to the VoiceAssist cloud (Supabase)
+    cloud_ready = staticmethod(lambda: True)
+
     def _online_usable(self) -> bool:
-        provider = self.settings.get("online.provider", "anthropic")
-        return bool(secrets_store.get_key(provider))
+        return bool(self.cloud_ready())
 
     def route(self) -> tuple[str, str]:
         """('online'|'local', human-readable reason)."""
@@ -274,7 +276,7 @@ class ConnectionManager:
         if pinned:
             return "local", "Staying on the local model until you choose to switch back"
         if not self._online_usable():
-            return "local", "No API key for the selected cloud provider"
+            return "local", "This copy isn't connected to the VoiceAssist cloud"
         return "online", "Internet available"
 
     def snapshot(self) -> dict:

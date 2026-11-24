@@ -20,11 +20,11 @@ import threading
 import time
 import uuid
 
-from . import audio, netutil, paths, secrets_store
+from . import audio, netutil, paths
 from .history import HistoryStore, build_context
 from .llm import AuthError, LLMError, LocalEngineUnavailable, ModelMissing, build_cloud, build_local
-from .stt import LocalWhisperSTT, OpenAICloudSTT, STTError
-from .tts import OpenAICloudTTS, SentenceChunker, TTSError, TTSRouter, speakable
+from .stt import LocalWhisperSTT, STTError
+from .tts import SentenceChunker, TTSError, TTSRouter, speakable
 
 log = logging.getLogger(__name__)
 
@@ -111,8 +111,8 @@ class Turn:
 class SpeechPipeline:
     """Turns streamed text into audio chunks on a worker thread, in order, as sentences complete."""
 
-    def __init__(self, engine: "Engine", turn: Turn, cloud_tts: OpenAICloudTTS | None):
-        self.engine, self.turn, self.cloud = engine, turn, cloud_tts
+    def __init__(self, engine: "Engine", turn: Turn):
+        self.engine, self.turn = engine, turn
         self.abort = threading.Event()
         self.q: queue.Queue = queue.Queue()
         self.chunker = SentenceChunker()
@@ -143,14 +143,7 @@ class SpeechPipeline:
         self.thread.join()
 
     def _synth(self, text: str):
-        if self.cloud is not None:
-            try:
-                return self.cloud.synth(text, self.turn.cancel), self.cloud.describe()
-            except (netutil.NetworkError, netutil.HTTPStatusError) as e:
-                log.warning("cloud TTS failed (%s); using local voice", e)
-                self.cloud = None
-                if isinstance(e, netutil.NetworkError):
-                    self.engine.conn.report_network_failure(f"cloud voice: {e}")
+        # voices are always made on this device (Piper / Windows voices), also when answers come from the cloud
         if self.local is None:
             return None, None
         return self.local.synth(text, self.turn.cancel), self.local.describe()
@@ -203,6 +196,7 @@ class Engine:
         self.local_status: dict = {"type": "local_model", "state": "unknown"}
         self._preload_lock = threading.Lock()
         self._cloud_abort: threading.Event | None = None
+        self.cloud_accounts = None   # set by the app: VoiceAssist cloud accounts (Supabase)
         conn.on_change(self._on_network)
 
     def _on_network(self, kind: str, snap: dict) -> None:
@@ -346,15 +340,6 @@ class Engine:
                 fname = paths.recordings_dir() / time.strftime("rec-%Y%m%d-%H%M%S.wav")
                 fname.write_bytes(wav)
             result = None
-            if route == "online" and self.settings.get("online.cloud_stt") and secrets_store.get_key("openai"):
-                try:
-                    result = OpenAICloudSTT(self.settings, secrets_store.get_key("openai")).transcribe(samples, sr, turn.cancel)
-                except netutil.NetworkError as e:
-                    self.conn.report_network_failure(f"cloud speech recognition: {e}")
-                    route, reason = "local", "Internet lost during speech recognition"
-                    turn.put(type="failover", message="Cloud speech recognition unreachable — using on-device Whisper.")
-                except Exception as e:  # noqa: BLE001
-                    log.warning("cloud STT failed: %s; using local", e)
             if turn.cancel.is_set():
                 turn.put(type="cancelled", stage="stt")
                 return
@@ -392,7 +377,8 @@ class Engine:
         routes = [route] + (["local"] if route == "online" else [])
         for attempt in routes:
             try:
-                provider = build_cloud(self.settings) if attempt == "online" else build_local(self.settings)
+                provider = (build_cloud(self.settings, self.cloud_accounts, turn.user_id) if attempt == "online"
+                            else build_local(self.settings))
             except AuthError as e:
                 if attempt == "online":
                     continue
@@ -411,10 +397,7 @@ class Engine:
         """Returns 'ok', 'failover', 'cancelled' or 'error'."""
         info = provider.describe()
         turn.put(type="llm_start", **info)
-        cloud_tts = None
-        if info["kind"] == "cloud" and self.settings.get("online.cloud_tts") and secrets_store.get_key("openai"):
-            cloud_tts = OpenAICloudTTS(self.settings, secrets_store.get_key("openai"))
-        speech = SpeechPipeline(self, turn, cloud_tts)
+        speech = SpeechPipeline(self, turn)
         parts: list[str] = []
         t0 = time.time()
         t_first = None
@@ -505,6 +488,8 @@ class Engine:
             turn.put(type="error", message=f"{info['label']} returned an empty answer.")
             return "error"
         mid = self.history.add(cid, "assistant", answer, info)
+        if getattr(provider, "questions_left", None) is not None:
+            info = {**info, "questions_left": provider.questions_left}
         now = time.time()
         turn.put(
             type="done", spoken=speech.seq > 0, message_id=mid, conversation_id=cid, provider=info,

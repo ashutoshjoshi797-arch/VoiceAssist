@@ -37,7 +37,7 @@ interface ChatProvider {
     fun describe() = jsonOf("kind" to kind, "provider" to provider, "label" to label, "model" to model)
 }
 
-// ======================================================================= cloud
+// ======================================================================= HTTP (used by the VoiceAssist cloud, Cloud.kt)
 object Http {
     fun open(url: String, method: String, headers: Map<String, String>, body: String?, timeoutS: Int, cancel: CancelToken?): HttpURLConnection {
         val c = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) { throw NetworkError("${URL(url).host}: $e") }
@@ -91,90 +91,6 @@ object Http {
         } finally {
             runCatching { reader.close() }
         }
-    }
-}
-
-private fun raiseFor(c: HttpURLConnection, label: String): Nothing {
-    val body = Http.errorBody(c)
-    val msg = runCatching { JSONObject(body).let { (it.opt("error") as? JSONObject)?.optString("message") ?: it.optString("error") } }.getOrNull()?.ifBlank { null } ?: body.take(300)
-    when (c.responseCode) {
-        401, 403 -> throw AuthError("$label rejected the API key (${c.responseCode}).", "Check the key in Settings → Online AI.")
-        404 -> throw LlmError("$label: model not found — $msg", "Pick a different model in Settings → Online AI.")
-        429 -> throw LlmError("$label rate limit or quota reached — $msg")
-        else -> throw LlmError("$label error ${c.responseCode}: $msg")
-    }
-}
-
-class AnthropicProvider(override val model: String, private val key: String, private val maxTokens: Int, private val timeout: Int,
-                        private val base: String = "https://api.anthropic.com") : ChatProvider {
-    override val kind = "cloud"; override val provider = "anthropic"; override val label = "Claude (Anthropic)"
-    override fun stream(system: String, messages: List<ChatMessage>, cancel: CancelToken, onDelta: (String) -> Unit) {
-        val msgs = JSONArray(); mergeRoles(messages).forEach { msgs.put(jsonOf("role" to it.role, "content" to it.content)) }
-        val body = jsonOf("model" to model, "max_tokens" to maxTokens, "system" to system, "messages" to msgs, "stream" to true)
-        val c = Http.open("$base/v1/messages", "POST", mapOf("x-api-key" to key, "anthropic-version" to "2023-06-01"), body.toString(), timeout, cancel)
-        if (c.responseCode != 200) raiseFor(c, "Claude")
-        var completed = false
-        Http.sse(c, cancel) { event, data ->
-            if (event == "error") throw LlmError("Claude stream error: ${data.take(300)}")
-            val j = runCatching { JSONObject(data) }.getOrNull() ?: return@sse true
-            when (j.optString("type")) {
-                "content_block_delta" -> j.optJSONObject("delta")?.let { d -> if (d.optString("type") == "text_delta") d.optString("text").takeIf { it.isNotEmpty() }?.let(onDelta) }
-                "message_stop" -> { completed = true; return@sse false }
-            }
-            true
-        }
-        if (!completed) throw NetworkError("Claude stream ended before the answer was complete")
-    }
-}
-
-class OpenAIProvider(override val model: String, private val key: String, private val maxTokens: Int, private val timeout: Int,
-                     private val base: String = "https://api.openai.com/v1") : ChatProvider {
-    override val kind = "cloud"; override val provider = "openai"; override val label = "OpenAI"
-    override fun stream(system: String, messages: List<ChatMessage>, cancel: CancelToken, onDelta: (String) -> Unit) {
-        val msgs = JSONArray().put(jsonOf("role" to "system", "content" to system))
-        mergeRoles(messages).forEach { msgs.put(jsonOf("role" to it.role, "content" to it.content)) }
-        val body = jsonOf("model" to model, "messages" to msgs, "stream" to true, "max_completion_tokens" to maxTokens)
-        val c = Http.open("$base/chat/completions", "POST", mapOf("Authorization" to "Bearer $key"), body.toString(), timeout, cancel)
-        if (c.responseCode != 200) raiseFor(c, label)
-        var completed = false
-        Http.sse(c, cancel) { _, data ->
-            if (data.trim() == "[DONE]") { completed = true; return@sse false }
-            val j = runCatching { JSONObject(data) }.getOrNull() ?: return@sse true
-            j.optJSONArray("choices")?.let { ch ->
-                for (i in 0 until ch.length()) ch.getJSONObject(i).optJSONObject("delta")?.optString("content")?.takeIf { it.isNotEmpty() && it != "null" }?.let(onDelta)
-            }
-            true
-        }
-        if (!completed) throw NetworkError("$label stream ended before the answer was complete")
-    }
-}
-
-class GeminiProvider(override val model: String, private val key: String, private val maxTokens: Int, private val timeout: Int,
-                     private val base: String = "https://generativelanguage.googleapis.com") : ChatProvider {
-    override val kind = "cloud"; override val provider = "gemini"; override val label = "Gemini (Google)"
-    override fun stream(system: String, messages: List<ChatMessage>, cancel: CancelToken, onDelta: (String) -> Unit) {
-        val contents = JSONArray()
-        mergeRoles(messages).forEach { contents.put(jsonOf("role" to (if (it.role == "assistant") "model" else "user"), "parts" to JSONArray().put(jsonOf("text" to it.content)))) }
-        val body = jsonOf("contents" to contents, "systemInstruction" to jsonOf("parts" to JSONArray().put(jsonOf("text" to system))),
-            "generationConfig" to jsonOf("maxOutputTokens" to maxTokens))
-        val c = Http.open("$base/v1beta/models/${java.net.URLEncoder.encode(model, "UTF-8")}:streamGenerateContent?alt=sse", "POST",
-            mapOf("x-goog-api-key" to key), body.toString(), timeout, cancel)
-        if (c.responseCode != 200) raiseFor(c, "Gemini")
-        var completed = false
-        Http.sse(c, cancel) { _, data ->
-            val j = runCatching { JSONObject(data) }.getOrNull() ?: return@sse true
-            j.optJSONArray("candidates")?.let { cands ->
-                for (i in 0 until cands.length()) {
-                    val cand = cands.getJSONObject(i)
-                    if (cand.optString("finishReason").isNotEmpty()) completed = true
-                    cand.optJSONObject("content")?.optJSONArray("parts")?.let { parts ->
-                        for (k in 0 until parts.length()) parts.getJSONObject(k).let { p -> if (!p.optBoolean("thought")) p.optString("text").takeIf { it.isNotEmpty() }?.let(onDelta) }
-                    }
-                }
-            }
-            true
-        }
-        if (!completed) throw NetworkError("Gemini stream ended before the answer was complete")
     }
 }
 

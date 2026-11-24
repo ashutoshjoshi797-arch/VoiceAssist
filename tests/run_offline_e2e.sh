@@ -27,11 +27,16 @@ export OLLAMA_HOST=127.0.0.1:11434 OLLAMA_MODELS=${OLLAMA_MODELS:-/home/claude/d
 ${OLLAMA_BIN:-/home/claude/dl/ollama/bin/ollama} serve > /tmp/e2e-ollama.log 2>&1 &
 OPID=$!
 [ -n "$RFKILL" ] && export VOICEASSIST_RFKILL_DIR=$RFKILL
-rm -f "$VOICEASSIST_HOME/last_url.txt" "$VOICEASSIST_HOME"/history.sqlite3* "$VOICEASSIST_HOME"/accounts.sqlite3*
+rm -f "$VOICEASSIST_HOME/last_url.txt" "$VOICEASSIST_HOME"/history.sqlite3* "$VOICEASSIST_HOME"/accounts.sqlite3* "$VOICEASSIST_HOME"/cloud_session.json
+# accounts live in the VoiceAssist cloud: a stand-in runs on loopback so the test can sign in (as a user would have
+# done once while online); the app still sees no network adapter, so it is OFFLINE / AIRPLANE and answers locally
+python3 tests/fake_supabase.py 54340 > /tmp/e2e-cloud.log 2>&1 &
+CPID=$!
+export VOICEASSIST_SUPABASE_URL=http://127.0.0.1:54340 VOICEASSIST_SUPABASE_KEY=test-anon-key
 echo "{\"local\": {\"model\": \"${LOCAL_MODEL:-qwen2.5:0.5b}\"}}" > "$VOICEASSIST_HOME/settings.json"
 python3 -m voiceassist --no-window --port 8765 > /tmp/e2e-app.log 2>&1 &
 APID=$!
-trap 'kill $APID $OPID 2>/dev/null || true' EXIT
+trap 'kill $APID $OPID $CPID 2>/dev/null || true' EXIT
 for i in $(seq 1 60); do [ -f "$VOICEASSIST_HOME/last_url.txt" ] && break; sleep 0.5; done
 sleep 2
 URL=$(cat "$VOICEASSIST_HOME/last_url.txt")

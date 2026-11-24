@@ -16,7 +16,7 @@
     <ul class="auth-points">
       <li><b>Talk naturally</b> — hands-free conversation, interrupt any time.</li>
       <li><b>Works without internet</b> — even in airplane mode.</li>
-      <li><b>Private by design</b> — accounts and history stay on this computer.</li>
+      <li><b>One account everywhere</b> — the same login works on your laptop, your phone and the website.</li>
     </ul>
     <div class="orb-hero auth-orb"></div>
   </section>
@@ -31,8 +31,8 @@
     <form class="auth-form" id="form-login" data-auth-panel="login" novalidate autocomplete="on">
       <h2>Welcome back</h2>
       <p class="muted small">Log in to continue your conversations.</p>
-      <label class="field"><span>Username</span>
-        <input name="username" autocomplete="username" required autofocus spellcheck="false"></label>
+      <label class="field"><span>Email</span>
+        <input name="email" type="email" autocomplete="username email" required autofocus spellcheck="false"></label>
       <label class="field"><span>Password</span>
         <div class="pw-wrap"><input name="password" type="password" autocomplete="current-password" required>
           <button type="button" class="pw-eye" tabindex="-1" aria-label="Show password">Show</button></div></label>
@@ -41,6 +41,7 @@
         <a href="#" class="link" id="link-forgot">Forgot password?</a>
       </div>
       <div class="auth-error" role="alert"></div>
+      <div class="auth-ok" role="status"></div>
       <button class="btn primary wide" type="submit">Log in</button>
       <p class="auth-switch muted small">New here? <a href="#" class="link" data-goto="signup">Create an account</a></p>
     </form>
@@ -48,13 +49,11 @@
     <!-- Sign up -->
     <form class="auth-form" id="form-signup" data-auth-panel="signup" novalidate autocomplete="on" hidden>
       <h2>Create your account</h2>
-      <p class="muted small" id="signup-note">Your account is stored only on this computer.</p>
+      <p class="muted small" id="signup-note">One VoiceAssist account works on your laptop, your phone and the website.</p>
       <label class="field"><span>Your name</span>
         <input name="display_name" autocomplete="name" maxlength="60" placeholder="e.g. Mohit"></label>
-      <label class="field"><span>Username</span>
-        <input name="username" autocomplete="username" required spellcheck="false" maxlength="32" placeholder="3–32 letters, numbers, . - _"></label>
-      <label class="field"><span>Email <em class="muted">(optional)</em></span>
-        <input name="email" type="email" autocomplete="email" maxlength="254"></label>
+      <label class="field"><span>Email</span>
+        <input name="email" type="email" autocomplete="username email" required spellcheck="false" maxlength="254" placeholder="you@example.com"></label>
       <label class="field"><span>Password</span>
         <div class="pw-wrap"><input name="password" type="password" autocomplete="new-password" required>
           <button type="button" class="pw-eye" tabindex="-1" aria-label="Show password">Show</button></div>
@@ -68,35 +67,30 @@
       <p class="auth-switch muted small">Already have an account? <a href="#" class="link" data-goto="login">Log in</a></p>
     </form>
 
-    <!-- Forgot password -->
-    <form class="auth-form" id="form-recover" data-auth-panel="recover" novalidate hidden>
-      <h2>Reset your password</h2>
-      <p class="muted small">Enter the recovery code you saved when you created your account.</p>
-      <label class="field"><span>Username</span><input name="username" autocomplete="username" required spellcheck="false"></label>
-      <label class="field"><span>Recovery code</span><input name="code" required spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" class="mono"></label>
+    <!-- Choose a new password (after opening the reset link from the email) -->
+    <form class="auth-form" id="form-newpw" data-auth-panel="newpw" novalidate hidden>
+      <h2>Choose a new password</h2>
+      <p class="muted small">You opened a password-reset link. Pick a new password for your VoiceAssist account.</p>
       <label class="field"><span>New password</span>
         <div class="pw-wrap"><input name="new_password" type="password" autocomplete="new-password" required>
           <button type="button" class="pw-eye" tabindex="-1" aria-label="Show password">Show</button></div></label>
       <label class="field"><span>Confirm new password</span><input name="confirm" type="password" autocomplete="new-password" required></label>
       <div class="auth-error" role="alert"></div>
-      <button class="btn primary wide" type="submit">Reset password</button>
+      <button class="btn primary wide" type="submit">Save new password</button>
+    </form>
+
+    <!-- Forgot password -->
+    <form class="auth-form" id="form-recover" data-auth-panel="recover" novalidate hidden>
+      <h2>Reset your password</h2>
+      <p class="muted small">Enter your account's email. We'll send you a link to choose a new password.</p>
+      <label class="field"><span>Email</span><input name="email" type="email" autocomplete="username email" required spellcheck="false"></label>
+      <div class="auth-error" role="alert"></div>
+      <div class="auth-ok" role="status"></div>
+      <button class="btn primary wide" type="submit">Send reset link</button>
       <p class="auth-switch muted small"><a href="#" class="link" data-goto="login">← Back to log in</a></p>
     </form>
   </section>
 </div>
-
-<!-- Recovery code (shown once) -->
-<dialog id="recovery-dialog" class="modal" aria-labelledby="rc-title">
-  <h2 id="rc-title">Save your recovery code</h2>
-  <p>If you forget your password, this code is the <b>only</b> way to get back into your account — there's no email reset because everything stays on this computer. It's shown only once.</p>
-  <div class="rc-code mono" id="rc-code"></div>
-  <div class="row">
-    <button class="btn" type="button" id="rc-copy">Copy</button>
-    <button class="btn" type="button" id="rc-download">Download .txt</button>
-  </div>
-  <label class="check"><input type="checkbox" id="rc-saved"> I've saved my recovery code somewhere safe</label>
-  <button class="btn primary wide" type="button" id="rc-continue" disabled>Continue</button>
-</dialog>
 
 <!-- One-click offline setup -->
 <dialog id="setup-dialog" class="modal" aria-labelledby="setup-title">
@@ -245,7 +239,7 @@
     <nav class="tabs" id="tabs">
       <button data-tab="account">Account</button>
       <button data-tab="general" class="active">General</button>
-      <button data-tab="online">Online AI</button>
+      <button data-tab="online">Cloud AI</button>
       <button data-tab="local" class="offline-feature">Local AI</button>
       <button data-tab="speech">Voice</button>
       <button data-tab="audio">Audio</button>
@@ -273,34 +267,10 @@
 
       <!-- Online -->
       <section data-panel="online" class="panel">
-        <label class="field"><span>Cloud provider</span>
-          <select data-setting="online.provider">
-            <option value="anthropic">Claude (Anthropic)</option>
-            <option value="openai">OpenAI</option>
-            <option value="gemini">Gemini (Google)</option>
-          </select>
-        </label>
-        <label class="field"><span>Claude model</span><input list="dl-anthropic" data-setting="online.models.anthropic"></label>
-        <label class="field"><span>OpenAI model</span><input list="dl-openai" data-setting="online.models.openai"></label>
-        <label class="field"><span>Gemini model</span><input list="dl-gemini" data-setting="online.models.gemini"></label>
-        <datalist id="dl-anthropic"></datalist><datalist id="dl-openai"></datalist><datalist id="dl-gemini"></datalist>
-
-        <h3>API keys</h3>
-        <p class="muted small desktop-only">Keys are stored in the Windows Credential Manager (or read from the <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code> environment variables). They are never written to the settings file.</p>
-        <p class="muted small web-only">Your keys are saved only in this browser, for your account, and are sent only to the provider they belong to. Get one at <a class="link" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic</a>, <a class="link" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI</a> or <a class="link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. An OpenAI or Gemini key also gives the best voice recognition.</p>
-        <div class="key-row" data-provider="anthropic"><span>Claude</span><input type="password" placeholder="sk-ant-…"><button class="btn small">Save</button><em></em></div>
-        <div class="key-row" data-provider="openai"><span>OpenAI</span><input type="password" placeholder="sk-…"><button class="btn small">Save</button><em></em></div>
-        <div class="key-row" data-provider="gemini"><span>Gemini</span><input type="password" placeholder="AIza…"><button class="btn small">Save</button><em></em></div>
-
-        <div class="desktop-only"><h3>Cloud speech (optional)</h3>
-        <label class="check"><input type="checkbox" data-setting="online.cloud_stt"> Use OpenAI speech recognition when online (needs OpenAI key)</label>
-        <label class="check"><input type="checkbox" data-setting="online.cloud_tts"> Use OpenAI voice when online (needs OpenAI key)</label>
-        <label class="field"><span>OpenAI transcription model</span><input data-setting="online.openai_stt_model"></label>
-        <label class="field"><span>OpenAI voice model / voice</span>
-          <div class="row"><input data-setting="online.openai_tts_model"><input data-setting="online.openai_tts_voice"></div>
-        </label>
-        </div>
-        <label class="field"><span>Max answer length (tokens)</span><input type="number" min="64" max="8192" data-setting="online.max_output_tokens"></label>
+        <p>Online answers come from the <b>VoiceAssist cloud AI</b> — one shared service for everyone who uses VoiceAssist. There's nothing to set up and no API key to enter.</p>
+        <div class="kv" id="cloud-info"></div>
+        <button class="btn" id="btn-cloud-usage">Refresh</button>
+        <label class="field"><span>Max answer length (tokens)</span><input type="number" min="64" max="1024" data-setting="online.max_output_tokens"></label>
       </section>
 
       <!-- Local -->
@@ -335,23 +305,19 @@
           <h3>Voice input</h3>
           <label class="field"><span>Recognise my speech with</span>
             <select data-setting="web.stt">
-              <option value="auto">Automatic — OpenAI or Gemini if I added a key, otherwise Chrome</option>
-              <option value="openai">OpenAI (needs OpenAI key)</option>
-              <option value="gemini">Gemini (needs Gemini key)</option>
-              <option value="browser">Chrome speech recognition</option>
+              <option value="auto">VoiceAssist cloud (recommended)</option>
+              <option value="browser">Chrome's built-in speech recognition</option>
             </select>
           </label>
           <label class="field"><span>Language</span><input data-setting="stt.language" placeholder="en"></label>
           <h3>Voice output</h3>
           <label class="field"><span>Speak answers with</span>
             <select data-setting="web.tts">
-              <option value="browser">This browser's voice (free)</option>
-              <option value="openai">OpenAI voice (needs OpenAI key)</option>
+              <option value="browser">This browser's voice</option>
               <option value="none">No voice (text only)</option>
             </select>
           </label>
           <label class="field"><span>Browser voice</span><select data-setting="web.browser_voice" id="web-voice-select"></select></label>
-          <label class="field"><span>OpenAI voice</span><input data-setting="online.openai_tts_voice" placeholder="alloy"></label>
         </div>
         <div class="offline-feature">
         <h3>Speech recognition (on-device Whisper)</h3>
@@ -406,7 +372,7 @@
         <h3>Profile</h3>
         <form class="acct-form" id="form-profile" novalidate>
           <label class="field"><span>Your name</span><input name="display_name" maxlength="60" required></label>
-          <label class="field"><span>Email (optional)</span><input name="email" type="email" maxlength="254"></label>
+          <label class="field"><span>Email</span><input name="email" type="email" maxlength="254" readonly></label>
           <div class="acct-msg"></div>
           <button class="btn" type="submit">Save profile</button>
         </form>
@@ -418,18 +384,11 @@
           <div class="acct-msg"></div>
           <button class="btn" type="submit">Change password</button>
         </form>
-        <h3>Recovery code</h3>
-        <form class="acct-form" id="form-recovery" novalidate>
-          <p class="muted small">Lost your recovery code? Create a new one — the old code stops working.</p>
-          <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
-          <div class="acct-msg"></div>
-          <button class="btn" type="submit">Create new recovery code</button>
-        </form>
         <h3>Session</h3>
         <button class="btn" id="btn-logout">Log out</button>
         <h3>Delete account</h3>
         <form class="acct-form" id="form-delete" novalidate>
-          <p class="muted small">Permanently deletes this account and all of its conversation history from this computer.</p>
+          <p class="muted small">Permanently deletes your VoiceAssist account, and its conversation history on this computer.</p>
           <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
           <label class="check"><input type="checkbox" name="sure" required> I understand this can't be undone</label>
           <div class="acct-msg"></div>

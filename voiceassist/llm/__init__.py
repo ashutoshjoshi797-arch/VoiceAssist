@@ -1,9 +1,7 @@
-"""Chat model providers and a factory that builds them from settings."""
+"""Chat model providers: the product's cloud AI (via Supabase) and the on-device engines."""
 from __future__ import annotations
 
-from .. import secrets_store
 from .base import AuthError, ChatProvider, LLMError, LocalEngineUnavailable, ModelMissing
-from .cloud import AnthropicProvider, GeminiProvider, OpenAIProvider
 from .local import RECOMMENDED_MODELS, LocalOpenAICompatProvider, OllamaProvider
 
 __all__ = [
@@ -12,21 +10,13 @@ __all__ = [
 ]
 
 
-def build_cloud(settings) -> ChatProvider:
+def build_cloud(settings, accounts, user_id) -> ChatProvider:
+    from ..cloud import VoiceAssistCloudProvider
+    if accounts is None or not accounts.configured:
+        raise AuthError("This copy of VoiceAssist isn't connected to the VoiceAssist cloud.")
     on = settings.get("online")
-    provider = on["provider"]
-    model = on["models"].get(provider)
-    key = secrets_store.get_key(provider)
-    if not key:
-        raise AuthError(f"No API key configured for {provider}.", hint="Add it in Settings → Online, or set the environment variable.")
-    kw = dict(max_tokens=int(on.get("max_output_tokens", 1024)), timeout=float(on.get("request_timeout_s", 30)))
-    if provider == "anthropic":
-        return AnthropicProvider(model, key, **kw)
-    if provider == "openai":
-        return OpenAIProvider(model, key, **kw)
-    if provider == "gemini":
-        return GeminiProvider(model, key, **kw)
-    raise LLMError(f"Unknown provider {provider}")
+    return VoiceAssistCloudProvider(accounts, user_id, max_tokens=int(on.get("max_output_tokens", 1024)),
+                                    timeout=float(on.get("request_timeout_s", 30)))
 
 
 def build_local(settings) -> ChatProvider:

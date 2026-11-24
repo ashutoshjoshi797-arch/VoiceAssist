@@ -1,5 +1,5 @@
 """Local chat models. Ollama is the primary engine; any OpenAI-compatible server on localhost
-(llama.cpp `llama-server`, LM Studio, …) is also supported via OpenAIProvider(local=True).
+(llama.cpp `llama-server`, LM Studio, …) is also supported (LocalOpenAICompatProvider).
 
 Every request here is checked to target loopback (see netutil.check_local_url), so local mode
 cannot send conversation data off the machine.
@@ -13,7 +13,7 @@ from typing import Iterator
 
 from .. import netutil
 from .base import ChatProvider, LLMError, LocalEngineUnavailable, ModelMissing, strip_think
-from .cloud import OpenAIProvider, merge_roles
+from .cloud import merge_roles
 
 log = logging.getLogger(__name__)
 
@@ -129,14 +129,43 @@ class OllamaProvider(ChatProvider):
                            hint="Try a smaller model or lower the context window in Settings → Local AI.")
 
 
-class LocalOpenAICompatProvider(OpenAIProvider):
+class LocalOpenAICompatProvider(ChatProvider):
+    """A model server on this computer that speaks the OpenAI chat format (llama-server, LM Studio)."""
+    kind, name, label = "local", "openai_compat", "Local server (OpenAI-compatible)"
+
     def __init__(self, model: str, base_url: str, max_tokens: int = 1024, allow_lan: bool = False):
-        super().__init__(model, api_key=None, max_tokens=max_tokens, timeout=300, base_url=base_url,
-                         local=True, allow_lan=allow_lan)
+        super().__init__(model)
+        self.base, self.max_tokens, self.timeout, self._allow_lan = base_url.rstrip("/"), max_tokens, 300, allow_lan
+
+    def _stream(self, system, messages, cancel_event) -> Iterator[str]:
+        body = {"model": self.model, "messages": [{"role": "system", "content": system}] + merge_roles(messages),
+                "stream": True, "max_tokens": self.max_tokens}
+        try:
+            s = netutil.open_request("POST", f"{self.base}/chat/completions", json_body=body, timeout=self.timeout,
+                                     cancel_event=cancel_event, local_only=True, allow_lan=self._allow_lan)
+        except netutil.HTTPStatusError as e:
+            raise LLMError(f"{self.label} error {e.status}: {e.body[:200]}") from e
+        completed = False
+        for _event, data in s.iter_sse():
+            if data.strip() == "[DONE]":
+                completed = True
+                break
+            try:
+                j = json.loads(data)
+            except ValueError:
+                continue
+            if "error" in j:
+                raise LLMError(f"{self.label} stream error: {j['error']}")
+            for ch in j.get("choices", []):
+                piece = (ch.get("delta") or {}).get("content")
+                if piece:
+                    yield piece
+        if not completed:
+            raise netutil.NetworkError(f"{self.label} stream ended before the answer was complete")
 
     def stream_chat(self, system, messages, cancel_event):
         try:
-            yield from strip_think(super().stream_chat(system, messages, cancel_event))
+            yield from strip_think(self._stream(system, messages, cancel_event))
         except netutil.NetworkError as e:
             raise LocalEngineUnavailable(
                 f"No local model server is answering at {self.base}.",

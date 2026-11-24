@@ -3,9 +3,11 @@
     python packaging/android/smoke_test.py path/to/app.apk
 
 1. installs the APK and opens it like a user would      2. checks the sign-in screen is shown
-3. signs up an account through the app's API             4. one-click offline setup (downloads speech + AI models)
-5. typed and spoken questions answered on the phone      6. AIRPLANE MODE ON: proves the internet is gone, then
-   asks again (typed + spoken) and checks the on-device AI answers and the app shows AIRPLANE MODE
+3. signs up a VoiceAssist cloud account (the test cloud, tests/fake_supabase.py, reached through adb reverse)
+4. one-click offline setup (downloads speech + AI models)
+5. online: typed and spoken questions answered by the shared cloud AI (no AI key anywhere), spoken on the phone
+6. AIRPLANE MODE ON: proves the internet is gone, then asks again (typed + spoken) and checks the on-device AI
+   answers and the app shows AIRPLANE MODE
 """
 from __future__ import annotations
 
@@ -19,6 +21,10 @@ import time
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
+from fake_supabase import ANON_KEY, FakeSupabase  # noqa: E402
+
+CLOUD_PORT = 54333
 PKG = "com.voiceassist.app"
 MODEL = os.environ.get("SMOKE_MODEL", "qwen2.5:0.5b")
 OUT = Path(os.environ.get("SMOKE_OUT", "android-test-output"))
@@ -79,7 +85,8 @@ def ask(api: Api, label: str, expect_kind: str = "local") -> None:
     evs = api.turn(body={"text": "What is the capital of France? Answer in one short sentence."})
     answer = "".join(e["text"] for e in evs if e["type"] == "token")
     start = next((e for e in evs if e["type"] == "llm_start"), {})
-    check(f"{label}: typed question answered by the on-device AI", "paris" in answer.lower() and start.get("kind") == expect_kind,
+    who = "the shared cloud AI" if expect_kind == "cloud" else "the on-device AI"
+    check(f"{label}: typed question answered by {who}", "paris" in answer.lower() and start.get("kind") == expect_kind,
           f"{start.get('kind')}: {answer[:100]}")
     check(f"{label}: answer spoken (audio produced on the phone)", any(e["type"] == "audio" for e in evs))
     st, wav = api.call("POST", "/api/tts/test", {"text": "What is the capital of Germany?"})
@@ -92,6 +99,13 @@ def ask(api: Api, label: str, expect_kind: str = "local") -> None:
 
 def main(apk: str) -> int:
     print(adb("install", "-r", "-g", apk, timeout=600, check_rc=True).strip())
+    # debug build: point the app at the test cloud (the release APK always uses the real VoiceAssist cloud)
+    cloud = FakeSupabase(CLOUD_PORT, limit=50).start()
+    adb("reverse", f"tcp:{CLOUD_PORT}", f"tcp:{CLOUD_PORT}", check_rc=True)
+    cfg = json.dumps({"supabase_url": f"http://127.0.0.1:{CLOUD_PORT}", "supabase_anon_key": ANON_KEY, "site_url": ""})
+    adb("shell", f"echo '{cfg}' > /data/local/tmp/cloud_override.json && chmod 644 /data/local/tmp/cloud_override.json")
+    adb("shell", "run-as", PKG, "mkdir", "-p", "files/voiceassist")
+    adb("shell", "run-as", PKG, "cp", "/data/local/tmp/cloud_override.json", "files/voiceassist/cloud_override.json")
     adb("shell", "pm", "grant", PKG, "android.permission.RECORD_AUDIO")
     adb("shell", "am", "start", "-W", "-n", f"{PKG}/.MainActivity", timeout=120)
 
@@ -120,8 +134,8 @@ def main(apk: str) -> int:
 
     st, v = api.json("GET", "/api/version")
     check("engine answers", st == 200, json.dumps(v))
-    st, r = api.json("POST", "/api/auth/signup", {"username": "phonetest", "password": "phone-test-123"})
-    check("account sign-up", st == 201 and "recovery_code" in r, str(st))
+    st, r = api.json("POST", "/api/auth/signup", {"email": "phone@example.com", "password": "phone-test-123", "display_name": "Phone"})
+    check("cloud account sign-up", st == 201 and r.get("user", {}).get("email") == "phone@example.com", f"{st} {r.get('error', '')}")
     st, s = api.json("GET", "/api/state")
     check("phone reports ONLINE with internet", str(s.get("network", {}).get("state")).upper() == "ONLINE" and s.get("platform") == "android",
           f"{s.get('network', {}).get('state')} / {s.get('platform')}")
@@ -141,8 +155,17 @@ def main(apk: str) -> int:
         if job.get("state") in ("done", "error"):
             break
         time.sleep(5)
+    for _ in range(20):   # "ready" is re-checked just after the job reports done
+        if s.get("ready") or job.get("state") != "done":
+            break
+        time.sleep(1)
+        st, s = api.json("GET", "/api/setup/status")
     check("offline setup downloaded speech + AI models", job.get("state") == "done" and s.get("ready"), job.get("step", ""))
-    ask(api, "online")
+    ask(api, "online", expect_kind="cloud")
+    check("online: the cloud got only the conversation (no AI key)", bool(cloud.chat_bodies) and set(cloud.chat_bodies[-1]) <= {"system", "messages", "max_tokens"})
+    # the internet is about to go away: the test cloud (reached over adb, not the network) must go with it
+    adb("reverse", "--remove", f"tcp:{CLOUD_PORT}")
+    cloud.stop()
 
     # ---- airplane mode: the real offline test ----
     adb("shell", "cmd", "connectivity", "airplane-mode", "enable")

@@ -9,7 +9,8 @@ interface Platform {
     fun ramGb(): Double?
     fun cpuThreads(): Int = maxOf(1, minOf(4, Runtime.getRuntime().availableProcessors() - 1))
     val network: NetworkSignals
-    val secrets: SecretStore
+    /** The VoiceAssist cloud (shared Supabase project) this copy of the app talks to. */
+    val cloud: CloudConfig
     /** Speech engines are created by the host because they need native libraries. */
     fun createSpeechToText(files: SttFiles, vadModel: File?, threads: Int, language: String): SpeechToText
     fun createTextToSpeech(files: TtsFiles, threads: Int): TextToSpeech
@@ -22,12 +23,6 @@ interface NetworkSignals {
     fun airplaneMode(): Boolean?
     /** Is any network (Wi-Fi/mobile/Ethernet) connected? null if unknown. */
     fun hasNetwork(): Boolean?
-}
-
-interface SecretStore {
-    fun get(provider: String): String?
-    fun set(provider: String, key: String?)
-    fun available(): Boolean = true
 }
 
 data class SttFiles(val encoder: String, val decoder: String, val tokens: String, val multilingual: Boolean)
@@ -52,7 +47,8 @@ class StorePaths(root: File) {
     val llm = File(models, "llm")
     val vad = File(models, "vad/silero_vad.onnx")
     val settings = File(root, "settings.json")
-    val accounts = File(root, "accounts.json")
+    val accounts = File(root, "accounts.json")          // old local accounts (before the VoiceAssist cloud)
+    val cloudSession = File(root, "cloud_session.json")
     val history = File(root, "history").also { it.mkdirs() }
     val recordings = File(root, "recordings")
 }

@@ -2,25 +2,18 @@ package com.voiceassist.app
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.provider.Settings
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
-import android.util.Base64
+import com.voiceassist.core.CloudConfig
 import com.voiceassist.core.NetworkSignals
 import com.voiceassist.core.Platform
-import com.voiceassist.core.SecretStore
 import com.voiceassist.core.SpeechToText
 import com.voiceassist.core.SttFiles
 import com.voiceassist.core.TextToSpeech
 import com.voiceassist.core.TtsFiles
 import java.io.File
-import java.security.KeyStore
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 
 /** Everything the shared core needs from Android. */
 class AndroidPlatform(private val ctx: Context) : Platform {
@@ -45,7 +38,13 @@ class AndroidPlatform(private val ctx: Context) : Platform {
         } catch (e: Exception) { null }
     }
 
-    override val secrets: SecretStore = KeystoreSecrets(ctx)
+    /** The VoiceAssist cloud: assets/cloud.json, copied from voiceassist/cloud.json at build time (public values only).
+     *  Debug builds (the emulator test) may point at a test cloud with files/voiceassist/cloud_override.json. */
+    override val cloud: CloudConfig by lazy {
+        val debuggable = ctx.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        val override = File(dataDir, "cloud_override.json").takeIf { debuggable && it.isFile }?.readText()
+        CloudConfig.parse(override ?: runCatching { ctx.assets.open("cloud.json").use { String(it.readBytes()) } }.getOrNull())
+    }
 
     override fun createSpeechToText(files: SttFiles, vadModel: File?, threads: Int, language: String): SpeechToText =
         SherpaStt(files, vadModel, threads, language)
@@ -56,43 +55,5 @@ class AndroidPlatform(private val ctx: Context) : Platform {
         val clean = path.trimStart('/')
         if (clean.isEmpty() || clean.split('/').any { it == ".." || it.isEmpty() }) return null
         return try { ctx.assets.open("web/$clean").use { it.readBytes() } } catch (e: Exception) { null }
-    }
-}
-
-/**
- * Cloud API keys, encrypted with an AES-GCM key that lives in the Android Keystore (never leaves secure hardware
- * where available). Only the ciphertext is stored in the app's private preferences.
- */
-class KeystoreSecrets(ctx: Context) : SecretStore {
-    private val prefs = ctx.getSharedPreferences("voiceassist_secrets", Context.MODE_PRIVATE)
-    private val alias = "voiceassist_api_keys"
-
-    private fun key(): SecretKey {
-        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
-        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-        gen.init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setKeySize(256).build())
-        return gen.generateKey()
-    }
-
-    @Synchronized override fun get(provider: String): String? {
-        val stored = prefs.getString(provider, null) ?: return null
-        return try {
-            val raw = Base64.decode(stored, Base64.NO_WRAP)
-            val c = Cipher.getInstance("AES/GCM/NoPadding")
-            c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, raw, 0, 12))
-            String(c.doFinal(raw, 12, raw.size - 12), Charsets.UTF_8)
-        } catch (e: Exception) { null }
-    }
-
-    @Synchronized override fun set(provider: String, key: String?) {
-        if (key.isNullOrEmpty()) { prefs.edit().remove(provider).apply(); return }
-        val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(Cipher.ENCRYPT_MODE, key())
-        val out = c.iv + c.doFinal(key.toByteArray(Charsets.UTF_8))
-        prefs.edit().putString(provider, Base64.encodeToString(out, Base64.NO_WRAP)).apply()
     }
 }

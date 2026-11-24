@@ -8,10 +8,10 @@ import java.util.concurrent.TimeUnit
 
 /** ONLINE / OFFLINE / AIRPLANE detection and cloud-vs-local routing (same policy as the desktop app). */
 class ConnectionManager(private val settings: Settings, private val signals: NetworkSignals,
-                        private val keyFor: (String) -> String?) {
+                        private val cloudTarget: Pair<String, Int>?, private val cloudReady: () -> Boolean) {
     companion object {
         const val ONLINE = "ONLINE"; const val OFFLINE = "OFFLINE"; const val AIRPLANE = "AIRPLANE"; const val UNKNOWN = "UNKNOWN"
-        val HOSTS = mapOf("anthropic" to "api.anthropic.com", "openai" to "api.openai.com", "gemini" to "generativelanguage.googleapis.com")
+        val FALLBACK = listOf("supabase.co" to 443, "www.google.com" to 443)
     }
 
     private val lock = Any()
@@ -41,8 +41,7 @@ class ConnectionManager(private val settings: Settings, private val signals: Net
             strict -> null
             net == false -> false
             else -> {
-                val provider = settings.str("online.provider", "anthropic")
-                val targets = probeOverride ?: (listOf(HOSTS[provider] ?: "api.anthropic.com") + HOSTS.filterKeys { it != provider }.values).take(2).map { it to 443 }
+                val targets = probeOverride ?: (listOfNotNull(cloudTarget) + FALLBACK).take(2)
                 targets.any { (h, p) -> probe(h, p) }
             }
         }
@@ -90,7 +89,7 @@ class ConnectionManager(private val settings: Settings, private val signals: Net
         val s = snapshot(); listeners.toList().forEach { runCatching { it("state", s) } }
     }
 
-    private fun onlineUsable() = !keyFor(settings.str("online.provider", "anthropic")).isNullOrEmpty()
+    private fun onlineUsable() = cloudReady()
 
     fun route(): Pair<String, String> {
         if (settings.str("mode", "auto") == "local") return "local" to "Local-only mode selected"
@@ -98,7 +97,7 @@ class ConnectionManager(private val settings: Settings, private val signals: Net
         val (st, pinned) = synchronized(lock) { state to pinnedLocal }
         if (st != ONLINE) return "local" to (mapOf(AIRPLANE to "Airplane mode", OFFLINE to "No internet", UNKNOWN to "Network status unknown")[st] ?: "Offline")
         if (pinned) return "local" to "Staying on the local model until you choose to switch back"
-        if (!onlineUsable()) return "local" to "No API key for the selected cloud provider"
+        if (!onlineUsable()) return "local" to "This copy isn't connected to the VoiceAssist cloud"
         return "online" to "Internet available"
     }
 

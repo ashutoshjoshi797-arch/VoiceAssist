@@ -4,7 +4,6 @@
 * SystemTTS    — the operating system's built-in offline voices (Windows SAPI via a persistent
                  PowerShell worker, `say` on macOS, espeak-ng on Linux). Zero downloads; used as a
                  fallback when no Piper voice is installed.
-* OpenAICloudTTS — optional cloud voice, only when the user enables cloud speech.
 
 Plus SentenceChunker, which turns a token stream into speakable chunks so audio starts playing
 while the model is still writing the rest of the answer.
@@ -299,30 +298,9 @@ while ($true) {
         return "System voice (on-device)"
 
 
-class OpenAICloudTTS:
-    name = "cloud"
-
-    def __init__(self, settings, api_key: str):
-        self.settings, self.api_key = settings, api_key
-        self.base = os.environ.get("VOICEASSIST_OPENAI_BASE", "https://api.openai.com/v1").rstrip("/")
-
-    def synth(self, text: str, cancel_event=None) -> tuple[np.ndarray, int]:
-        body = {
-            "model": self.settings.get("online.openai_tts_model", "gpt-4o-mini-tts"),
-            "voice": self.settings.get("online.openai_tts_voice", "alloy"),
-            "input": text, "response_format": "wav",
-            "speed": float(self.settings.get("tts.speed", 1.0) or 1.0),
-        }
-        s = netutil.open_request("POST", f"{self.base}/audio/speech", json_body=body, timeout=30,
-                                 headers={"Authorization": f"Bearer {self.api_key}"}, cancel_event=cancel_event)
-        return audio.wav_to_float32(s.read_all())
-
-    def describe(self) -> str:
-        return f"OpenAI {self.settings.get('online.openai_tts_model')} (cloud)"
-
 
 class TTSRouter:
-    """Picks the TTS engine: cloud (if enabled & online) → Piper → system voice → none."""
+    """Picks the on-device TTS engine: Piper → system voice → none."""
 
     def __init__(self, settings):
         self.settings = settings

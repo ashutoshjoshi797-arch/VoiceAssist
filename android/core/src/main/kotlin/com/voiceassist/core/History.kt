@@ -32,7 +32,7 @@ class HistoryStore(private val dir: File?, val persistent: Boolean = dir != null
         tmp.renameTo(f)
     }
 
-    fun create(userId: Int?, title: String = "New conversation"): String = synchronized(lock) {
+    fun create(userId: String?, title: String = "New conversation"): String = synchronized(lock) {
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val c = jsonOf("id" to id, "title" to title, "created" to now(), "updated" to now(), "user_id" to userId, "messages" to JSONArray())
         convs[id] = c
@@ -40,14 +40,17 @@ class HistoryStore(private val dir: File?, val persistent: Boolean = dir != null
         id
     }
 
-    fun exists(cid: String?, userId: Int?): Boolean = synchronized(lock) {
+    private fun owner(c: JSONObject): String? = if (c.isNull("user_id")) null else c.opt("user_id")?.toString()
+
+    fun exists(cid: String?, userId: String?): Boolean = synchronized(lock) {
         val c = cid?.let { convs[it] } ?: return false
-        userId == null || (c.opt("user_id") as? Number)?.toInt() == userId
+        userId == null || owner(c) == userId
     }
 
-    fun claimOrphans(userId: Int): Int = synchronized(lock) {
+    /** Gives conversations from before the VoiceAssist cloud (no owner, or an old local account number) to [userId]. */
+    fun claimOrphans(userId: String): Int = synchronized(lock) {
         var n = 0
-        for (c in convs.values) if (c.isNull("user_id")) { c.put("user_id", userId); save(c); n++ }
+        for (c in convs.values) if (c.isNull("user_id") || c.opt("user_id") is Number) { c.put("user_id", userId); save(c); n++ }
         n
     }
 
@@ -71,9 +74,9 @@ class HistoryStore(private val dir: File?, val persistent: Boolean = dir != null
         return (0 until m.length()).map { m.getJSONObject(it).let { o -> ChatMessage(o.getString("role"), o.getString("content")) } }
     }
 
-    fun list(userId: Int?, limit: Int = 200): JSONArray = synchronized(lock) {
+    fun list(userId: String?, limit: Int = 200): JSONArray = synchronized(lock) {
         val out = JSONArray()
-        convs.values.filter { userId == null || (it.opt("user_id") as? Number)?.toInt() == userId }
+        convs.values.filter { userId == null || owner(it) == userId }
             .sortedByDescending { it.getDouble("updated") }.take(limit).forEach {
                 out.put(jsonOf("id" to it.getString("id"), "title" to it.getString("title"), "created" to it.getDouble("created"),
                     "updated" to it.getDouble("updated"), "n" to it.getJSONArray("messages").length()))
@@ -86,10 +89,10 @@ class HistoryStore(private val dir: File?, val persistent: Boolean = dir != null
         dir?.let { File(it, "$cid.json").delete() }
     }
 
-    fun clear(userId: Int?) = synchronized(lock) {
+    fun clear(userId: String?) = synchronized(lock) {
         for (id in convs.keys.toList()) {
             val c = convs[id]!!
-            if (userId == null || (c.opt("user_id") as? Number)?.toInt() == userId) delete(id)
+            if (userId == null || owner(c) == userId) delete(id)
         }
     }
 }

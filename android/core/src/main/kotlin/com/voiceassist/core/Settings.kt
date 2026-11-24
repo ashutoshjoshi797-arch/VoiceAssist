@@ -45,9 +45,6 @@ class Settings(private val file: File) {
 
     private fun validate(p: JSONObject) {
         p.optString("mode", "").let { if (it.isNotEmpty() && it !in setOf("auto", "local")) throw IllegalArgumentException("mode must be auto or local") }
-        p.optJSONObject("online")?.optString("provider", "")?.let {
-            if (it.isNotEmpty() && it !in setOf("anthropic", "openai", "gemini")) throw IllegalArgumentException("unknown provider")
-        }
         p.optJSONObject("tts")?.let { t ->
             if (t.has("speed")) { val s = t.getDouble("speed"); if (s < 0.5 || s > 2.0) throw IllegalArgumentException("tts.speed must be between 0.5 and 2.0") }
         }
@@ -62,16 +59,7 @@ class Settings(private val file: File) {
         fun defaults(): JSONObject = JSONObject("""
         {
           "mode": "auto", "auto_switch_back": false, "strict_offline": false,
-          "online": {
-            "provider": "anthropic",
-            "models": {"anthropic": "claude-sonnet-5-5", "openai": "gpt-5.5", "gemini": "gemini-3.8-flash"},
-            "model_choices": {"anthropic": ["claude-sonnet-5-5","claude-haiku-5-5","claude-opus-5-5"],
-                              "openai": ["gpt-5.5","gpt-5.6-sol","chat-latest"],
-                              "gemini": ["gemini-3.8-flash","gemini-3.5-flash-lite","gemini-3.6-flash"]},
-            "max_output_tokens": 1024, "request_timeout_s": 30,
-            "cloud_stt": false, "cloud_tts": false,
-            "openai_stt_model": "gpt-transcribe", "openai_tts_model": "gpt-4o-mini-tts", "openai_tts_voice": "alloy"
-          },
+          "online": {"max_output_tokens": 1024, "request_timeout_s": 30},
           "local": {"engine": "llama.cpp", "model": "llama3.2:1b", "num_ctx": 2048, "temperature": 0.7, "preload": true,
                     "max_tokens": 400, "ollama_url": "", "openai_compat_url": "", "keep_alive": "", "allow_lan": false},
           "stt": {"model": "whisper-base.en", "language": "en", "threads": 0, "provider": "cpu", "use_vad_trim": true},

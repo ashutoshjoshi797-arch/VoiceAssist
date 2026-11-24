@@ -1,5 +1,5 @@
 ; VoiceAssist Windows installer (NSIS 3) - an alternative to VoiceAssist.iss that can also be built on Linux:
-;   NSISDIR=<nsis> makensis -DAPPVER=1.1.1 -DPAYLOAD=<payload dir> -DOUTFILE=<exe> VoiceAssist.nsi
+;   NSISDIR=<nsis> makensis -DAPPVER=1.2.0 -DPAYLOAD=<payload dir> -DOUTFILE=<exe> VoiceAssist.nsi
 ; Payload layout (same as for the Inno Setup build):
 ;   python-x64\  python-arm64\   relocatable CPython 3.12 + packages
 ;   app\                          voiceassist\ + web\
@@ -12,7 +12,7 @@ SetCompressorDictSize 64
 RequestExecutionLevel user
 
 !ifndef APPVER
-  !define APPVER "1.1.1"
+  !define APPVER "1.2.0"
 !endif
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\VoiceAssist"
 !define STOP_APP `powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-CimInstance Win32_Process | Where-Object { $$_.CommandLine -like '*-m voiceassist*' } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force }"`

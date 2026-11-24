@@ -10,11 +10,10 @@ class JvmPlatform(override val dataDir: File, private val webDir: File, private 
         override fun airplaneMode(): Boolean? = System.getProperty("voiceassist.airplane")?.toBoolean()
         override fun hasNetwork(): Boolean? = System.getProperty("voiceassist.hasNetwork")?.toBoolean() ?: online
     }
-    private val keys = HashMap<String, String>()
-    override val secrets = object : SecretStore {
-        override fun get(provider: String) = System.getenv("${provider.uppercase()}_API_KEY") ?: keys[provider]
-        override fun set(provider: String, key: String?) { if (key == null) keys.remove(provider) else keys[provider] = key }
-    }
+    override val cloud = CloudConfig(
+        (System.getProperty("voiceassist.supabaseUrl") ?: System.getenv("VOICEASSIST_SUPABASE_URL") ?: "").trimEnd('/'),
+        System.getProperty("voiceassist.supabaseKey") ?: System.getenv("VOICEASSIST_SUPABASE_KEY") ?: "",
+        "https://ashutoshjoshi797-arch.github.io/VoiceAssist/")
     override fun createSpeechToText(files: SttFiles, vadModel: File?, threads: Int, language: String): SpeechToText =
         reflect("com.voiceassist.app.SherpaStt", files, vadModel, threads, language) ?: object : SpeechToText {
             override fun transcribe(samples16k: FloatArray) = if (samples16k.size > 8000) "What is the capital of France?" else ""

@@ -18,7 +18,17 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
       - name: Account, setup and privacy tests
-        run: python -m unittest tests.test_accounts tests.test_setup -v
+        run: |
+          python -m unittest tests.test_accounts -v
+          python -m unittest tests.test_setup -v
+      - name: Desktop engine against the (test) VoiceAssist cloud — accounts, cloud AI, daily limit
+        run: python tests/e2e_cloud_api.py --data /tmp/va-py -- python -m voiceassist --no-window --port 8799
+      - uses: denoland/setup-deno@v2
+        with: { deno-version: v2.x }
+      - name: VoiceAssist cloud "chat" Edge Function (stand-in Supabase + Gemini)
+        run: |
+          deno check supabase/functions/chat/index.ts supabase/functions/delete-account/index.ts
+          deno test --allow-net --allow-env --allow-read supabase/functions/tests/chat_test.ts
 
   windows:
     runs-on: windows-latest
@@ -101,9 +111,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: Build the website edition (online only)
-        run: python packaging/web/build_site.py site
-      - name: Test it in Chrome (fake microphone, cloud APIs faked at the network layer)
+      - name: Build the website edition (online only) — for the real VoiceAssist cloud, and a copy for the test cloud
+        run: |
+          python packaging/web/build_site.py site
+          VOICEASSIST_SUPABASE_URL=http://127.0.0.1:54329 VOICEASSIST_SUPABASE_KEY=test-anon-key python packaging/web/build_site.py site-test
+      - name: Test it in Chrome (fake microphone, VoiceAssist cloud faked by tests/fake_supabase.py)
         run: |
           pip install playwright
           python -m playwright install --with-deps chromium
@@ -115,7 +127,7 @@ jobs:
               frames = [0] * 32000 + [int(9000 * math.sin(i / 6) * (0.6 + 0.4 * math.sin(i / 900))) for i in range(40000)] + [0] * 48000
               w.writeframes(b"".join(struct.pack("<h", f) for f in frames))
           PY
-          python tests/e2e_web.py --site site --wav mic.wav --chrome "$(python -c 'from playwright.sync_api import sync_playwright as s; p=s().start(); print(p.chromium.executable_path); p.stop()')"
+          python tests/e2e_web.py --site site-test --wav mic.wav --chrome "$(python -c 'from playwright.sync_api import sync_playwright as s; p=s().start(); print(p.chromium.executable_path); p.stop()')"
       - uses: actions/upload-pages-artifact@v3
         with: { path: site }
 
@@ -151,6 +163,8 @@ jobs:
           curl -fsSL -o android/app/libs/sherpa-onnx-1.13.8.aar https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
       - name: Core unit tests (JVM)
         run: gradle -p android -PcoreOnly :core:test --console=plain
+      - name: Phone engine against the (test) VoiceAssist cloud — accounts, cloud AI, daily limit
+        run: python3 tests/e2e_cloud_api.py --data /tmp/va-core -- gradle -p android -q --no-daemon -PcoreOnly :core:devServer -Dva.data=/tmp/va-core -Dva.web=$PWD/web
       - name: Build the phone APK (arm64)
         run: |
           gradle -p android :app:assembleRelease -Pabis=arm64-v8a --console=plain

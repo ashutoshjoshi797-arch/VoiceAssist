@@ -19,11 +19,12 @@ The microphone was Chromium's fake capture device playing a WAV of a spoken ques
 | Mute: nothing heard while muted; heard again after unmuting | ✅ |
 | Microphone permission denied → clear message, typing still works | ✅ |
 | No microphone → clear message, typing still works | ✅ |
-| **A: Online** with a simulated cloud provider (real Claude/OpenAI/Gemini streaming formats) | ✅ answer from the cloud, spoken, tagged ☁ |
+| **A: Online** against a stand-in VoiceAssist cloud (`tests/fake_supabase.py`: same Supabase Auth REST API and the same streaming format as the `chat` function) | ✅ answer from the cloud AI, spoken, tagged ☁; the request carries only the conversation (no AI key) |
+| **Shared cloud, no user keys** (`tests/e2e_cloud_api.py`, run against the desktop engine **and** the phone engine): sign-up · cloud answer · questions-left count · daily limit reached → offline AI answers · profile · password change · log out / log in · reset email · delete account | ✅ 18/18 on both engines |
 | Automatic switching in the UI: ONLINE → cloud unreachable → OFFLINE + local answer → back online → **asks** to switch back → cloud again; one conversation kept throughout | ✅ |
 | Connection drops mid-answer → same answer restarted on the local model | ✅ |
 | Connection stalls mid-answer (no data) → aborted when the network is detected down, local answer | ✅ (in under 25 s, not after a 60 s stall) |
-| Invalid API key → message shown + local answer | ✅ |
+| Expired cloud sign-in / daily limit / cloud busy → message shown + local answer | ✅ |
 | Missing local model → "ollama pull <model>" hint · Ollama not running → hint · missing Whisper model → download command · missing voice → fallback or message | ✅ |
 | Long conversation (24 turns, context trimming) | ✅ |
 | Silence/noise doesn't produce fake transcripts | ✅ |
@@ -32,15 +33,17 @@ The microphone was Chromium's fake capture device playing a WAV of a spoken ques
 | Windows voice-worker protocol (PowerShell stdin/stdout, Unicode) using real PowerShell 7 with the SAPI engine stubbed | ✅ |
 | `install.ps1` parsed with PowerShell 7 **and as Windows PowerShell 5.1 reads it** (ANSI code page) | ✅ no parse errors |
 | Voice controls collapsed behind the mic button next to Send; Space/M/Esc work while closed | ✅ |
-| **Accounts (UI, no network):** first run opens on Sign up · validation · recovery code dialog · app opens · log out · wrong password rejected · log in brings history back · stays signed in after reopening · second account sees an empty history · forgot password with recovery code (new code issued) · profile + password change | ✅ 18/18 checks, 4 runs in a row |
-| **Accounts (API):** hashed passwords, unique usernames, lockout after 5 failures, session expiry, recovery code works once, password change signs out other sessions, every app endpoint closed without a session, forged cookie rejected, other users' conversations return 404, a turn can't write into another user's conversation | ✅ 12 tests |
+| **Website (real Chrome, fake mic, stand-in cloud):** sign up with email · one shared cloud AI (no key fields) · questions left shown · typed + spoken questions answered · daily limit message · offline → asks to reconnect (no offline answers) · reload keeps the session · wrong password · log in again · forgot password → email → reset link → new password | ✅ all checks (`tests/e2e_web.py`) |
+| **Accounts (API):** email sign-up / login through Supabase Auth, email-confirmation flow, every app endpoint closed without a session, forged cookie rejected, other users' conversations return 404, older local conversations handed to the first cloud account | ✅ `tests/test_accounts.py` |
+| **Check before sending** (network namespace, real Whisper + local LLM): spoken question appears in the message box, listening pauses, nothing is sent until Send; the edited text is what's sent and answered. Same on the website with the cloud. Send-straight-away mode still works | ✅ |
+| **Offline after the change** (network namespace: no adapter, no route, no DNS): voice question → local Whisper → local LLM → spoken answer | ✅ re-run 2026-11-22 |
 
 **Not tested yet — these need your Windows ARM64 PC:**
 * Real microphone and speakers, Windows audio-device selection, echo cancellation on laptop speakers.
 * The Windows airplane-mode registry value and Wi-Fi toggling (the detection logic is shared, but the Windows signal itself was not exercised).
-* The Edge app window, the Windows Credential Manager, the real Windows SAPI voices.
+* The Edge app window and the real Windows SAPI voices.
 * `install.ps1` end to end (winget, venv, shortcuts) and the sherpa-onnx ARM64 wheel at runtime.
-* Real Claude/OpenAI/Gemini API calls (no API keys were available; the wire formats were tested against a fake server).
+* The real Supabase project and the real Gemini free tier — until the project exists, all cloud tests use the stand-in (`tests/fake_supabase.py`).
 
 ## Run the automated tests yourself
 
@@ -48,6 +51,7 @@ The microphone was Chromium's fake capture device playing a WAV of a spoken ques
 .venv\Scripts\pip install -r requirements-dev.txt
 .venv\Scripts\python -m unittest tests.test_backend -v     # needs Ollama running + speech models
 .venv\Scripts\python -m unittest tests.test_accounts -v    # account system (no models needed)
+.venv\Scripts\python tests\e2e_cloud_api.py --data %TEMP%\va-e2e -- .venv\Scripts\python -m voiceassist --no-window --port 8799
 .venv\Scripts\python -m voiceassist.diagnostics            # offline self-test (blocks network in-process)
 ```
 `tests/e2e_ui.py` and `tests/e2e_switch.py` drive a real browser (`playwright install chromium`, or
@@ -59,16 +63,16 @@ pass `--chrome "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"`).
 Run `install.ps1` once while online. Then:
 
 ### Test A — Online
-1. Connect to Wi-Fi. Add an API key (Settings → Online AI) and choose e.g. Claude in the model menu.
-2. Start VoiceAssist. Expected: the pill shows **ONLINE**, and the top bar says "Answering with claude-… · cloud".
+1. Connect to Wi-Fi and start VoiceAssist; log in. There is nothing to configure — no API key.
+2. Expected: the pill shows **ONLINE**, and the top bar says "Answering with VoiceAssist cloud AI". Settings → Cloud AI shows "Questions left today: 50 of 50".
 3. Press the mic (allow microphone access the first time). Ask "What's a good name for a cat?"
-4. Expected: your words appear, an answer streams in tagged **☁ Claude**, and you hear it.
+4. Expected: your words appear, an answer streams in tagged **☁ Cloud AI**, and you hear it.
 
 ### Test B — Offline (Wi-Fi disconnected)
 1. While the app is running, turn Wi-Fi off (or unplug Ethernet).
 2. Expected within ~3–8 s: the pill turns **OFFLINE**, toast "Offline — switched to on-device AI", and the top bar shows the local model.
 3. Ask a question by voice. Expected: answer tagged **🔒 on this PC**, spoken aloud.
-4. Turn Wi-Fi back on. Expected: banner "Internet is back. Switch to Claude…?" Choose either option.
+4. Turn Wi-Fi back on. Expected: banner "Internet is back. Switch back to the cloud AI?" Choose either option.
 
 ### Test C — Airplane mode
 1. Press Win + A → **Airplane mode** on (check Wi-Fi and Bluetooth are both off).
@@ -77,10 +81,10 @@ Run `install.ps1` once while online. Then:
 4. Optional: Settings → Diagnostics → **Run offline self-test**, or run `selftest.bat`. Expected: all steps ✓.
 
 ### Accounts
-1. Start VoiceAssist: the sign-in page appears on **Sign up**. Create an account and save the recovery code.
+1. Start VoiceAssist (online): the sign-in page appears. **Sign up** with your email and a password.
 2. Bottom of the sidebar → your name → **Log out**. Log in again: your conversations are back.
-3. Log out → **Sign up** a second account: its history is empty.
-4. Log out → **Forgot password?** → username + recovery code → new password: you're signed in, and a new recovery code is shown.
+3. Log in with the same email on the phone app and on the website: the same account works there.
+4. Log out → **Forgot password?** → your email → open the email's link → choose a new password → you're signed in.
 
 ### Extra checks
 | Check | How | Expected |
@@ -97,8 +101,8 @@ Run `install.ps1` once while online. Then:
 
 | What | How it is tested | Status |
 |---|---|---|
-| Phone engine (Kotlin) — accounts, history, settings, routing, cloud streaming | `tests/e2e_accounts.py` and `tests/e2e_ui.py` run against the Kotlin engine on the desktop (`gradle -PcoreOnly :core:devServer`), with real sherpa-onnx (Whisper + Piper through the Android classes) and real llama.cpp through the JNI bridge | Passed here (18/18 account checks; voice basic + barge-in) |
+| Phone engine (Kotlin) — cloud accounts, history, routing, cloud AI | `tests/e2e_cloud_api.py` against the Kotlin engine on the desktop (`gradle -PcoreOnly :core:devServer`) and the stand-in cloud; `tests/e2e_ui.py` for voice with real sherpa-onnx and llama.cpp | Passed here (18/18); also runs in CI |
 | On-device LLM bridge | `core/src/test/.../LlamaTest.kt`: real GGUF generation, multi-turn memory, cancel | Passed here |
 | Android shell code | compiled against the Android 15 framework classes | Compiles here; the APK itself is built by CI |
-| Android APK end to end | `packaging/android/smoke_test.py` on an API 34 emulator in GitHub Actions: install, sign-in screen visible, sign-up, one-click offline setup, typed + spoken questions, then **airplane mode on** (proves ping/DNS fail) and asks again — must be answered on the phone with the indicator showing AIRPLANE MODE | Runs on every push |
-| Windows installer | `packaging/windows/smoke_test.py` on `windows-latest` (x64) and `windows-11-arm` (ARM64): silent install with no admin, engine start, sign-up, one-click setup (silent Ollama install + model pull), typed + spoken questions, offline self-test with the network blocked, silent uninstall | Runs on every push |
+| Android APK end to end | `packaging/android/smoke_test.py` on an API 34 emulator in GitHub Actions: install, sign-in screen visible, cloud sign-up, one-click offline setup, typed + spoken questions answered by the cloud AI, then **airplane mode on** (proves ping/DNS fail) and asks again — must be answered on the phone with the indicator showing AIRPLANE MODE | Runs on every push |
+| Windows installer | `packaging/windows/smoke_test.py` on `windows-latest` (x64) and `windows-11-arm` (ARM64): silent install with no admin, engine start, cloud sign-up + cloud answer, one-click setup (silent Ollama install + model pull), typed + spoken questions, offline self-test with the network blocked, silent uninstall | Runs on every push |

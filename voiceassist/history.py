@@ -56,10 +56,12 @@ class HistoryStore:
             row = self._db.execute("SELECT user_id FROM conversations WHERE id=?", (cid,)).fetchone()
         return row is not None and (user_id is None or row["user_id"] == user_id)
 
-    def claim_orphans(self, user_id: int) -> int:
-        """Give conversations made before accounts existed to this (first) user."""
+    def claim_orphans(self, user_id) -> int:
+        """Give conversations made on this computer before cloud accounts (no account, or an old local
+        account) to the first cloud account that signs in here."""
         with self._lock:
-            n = self._db.execute("UPDATE conversations SET user_id=? WHERE user_id IS NULL", (user_id,)).rowcount
+            n = self._db.execute("UPDATE conversations SET user_id=? WHERE user_id IS NULL OR typeof(user_id)='integer'",
+                                 (user_id,)).rowcount
             self._db.commit()
         return n
 

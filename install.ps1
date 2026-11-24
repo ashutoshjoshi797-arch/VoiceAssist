@@ -86,7 +86,7 @@ $VPy = Join-Path $Root ".venv\Scripts\python.exe"
 & $VPy -m pip install --upgrade pip --disable-pip-version-check -q
 & $VPy -m pip install -r requirements.txt --disable-pip-version-check
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
-& $VPy -c "import sherpa_onnx, numpy, keyring, psutil; print('sherpa-onnx', sherpa_onnx.__version__)"
+& $VPy -c "import sherpa_onnx, numpy, psutil; print('sherpa-onnx', sherpa_onnx.__version__)"
 Ok "Python packages installed"
 
 # ------------------------------------------------------------------ 3. speech models
@@ -153,4 +153,4 @@ if (-not $NoShortcuts) {
 }
 
 Write-Host "`nDone. Start VoiceAssist from the Start menu / Desktop, or run .\run.bat" -ForegroundColor Green
-Write-Host "Cloud AI is optional: set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY, or paste a key in Settings -> Online AI." -ForegroundColor Gray
+Write-Host "Online answers come from VoiceAssist Cloud - just sign in with your email in the app. No API key needed." -ForegroundColor Gray

@@ -37,5 +37,5 @@ tasks.register<JavaExec>("devServer") {
     args = listOf(System.getProperty("va.data") ?: "build/devserver", System.getProperty("va.web") ?: "../../web", System.getProperty("va.port") ?: "0")
     systemProperty("voiceassist.llamaLib", System.getProperty("voiceassist.llamaLib") ?: "")
     System.getProperty("va.jni")?.let { systemProperty("java.library.path", it) }
-    listOf("voiceassist.airplane", "voiceassist.hasNetwork", "voiceassist.anthropicBase").forEach { k -> System.getProperty(k)?.let { systemProperty(k, it) } }
+    listOf("voiceassist.airplane", "voiceassist.hasNetwork", "voiceassist.supabaseUrl", "voiceassist.supabaseKey").forEach { k -> System.getProperty(k)?.let { systemProperty(k, it) } }
 }

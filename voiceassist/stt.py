@@ -2,7 +2,6 @@
 
 * LocalWhisperSTT — OpenAI Whisper running on-device through sherpa-onnx (ONNX Runtime, CPU or GPU).
   Optional Silero VAD trims silence before decoding (faster, fewer hallucinations).
-* OpenAICloudSTT  — OpenAI transcription API, used only when the user enables cloud speech.
 """
 from __future__ import annotations
 
@@ -164,28 +163,3 @@ class LocalWhisperSTT:
                 "error": self.load_error, "available": models_catalog.installed_stt(),
                 "vad": models_catalog.vad_installed(), "engine_ok": sherpa_onnx is not None}
 
-
-class OpenAICloudSTT:
-    name = "cloud"
-
-    def __init__(self, settings, api_key: str):
-        self.settings, self.api_key = settings, api_key
-        import os
-        self.base = os.environ.get("VOICEASSIST_OPENAI_BASE", "https://api.openai.com/v1").rstrip("/")
-
-    def transcribe(self, samples: np.ndarray, sample_rate: int, cancel_event=None) -> dict:
-        wav = audio.float32_to_wav(audio.resample(samples, sample_rate, 16000), 16000)
-        model = self.settings.get("online.openai_stt_model", "gpt-transcribe")
-        fields = {"model": model, "response_format": "json"}
-        lang = self.settings.get("stt.language")
-        if lang:
-            fields["language"] = lang
-        body, ctype = netutil.multipart_body(fields, {"file": ("speech.wav", "audio/wav", wav)})
-        t0 = time.time()
-        j = netutil.request_json(
-            "POST", f"{self.base}/audio/transcriptions", data=body,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": ctype},
-            timeout=30, cancel_event=cancel_event,
-        )
-        return {"text": clean_transcript(j.get("text", "")), "duration": len(samples) / sample_rate,
-                "seconds": time.time() - t0, "engine": f"OpenAI {model} (cloud)"}

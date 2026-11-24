@@ -1,7 +1,8 @@
 # VoiceAssist — desktop AI voice assistant that works online, offline and in airplane mode
 
-Talk to an AI with your voice and hear it answer. When the internet is available it can use
-**Claude, OpenAI or Gemini**; when Wi-Fi is off, Ethernet is unplugged or **airplane mode** is on,
+Talk to an AI with your voice and hear it answer. When the internet is available it answers with the
+**VoiceAssist cloud AI** — one shared service for every user, nothing to configure and no API key to enter;
+when Wi-Fi is off, Ethernet is unplugged or **airplane mode** is on,
 it keeps working with **on-device models only** — speech recognition (Whisper), the language model
 (Ollama), and the voice (Piper) all run on your computer.
 
@@ -13,12 +14,13 @@ the same features (everything, including the offline AI, runs on the phone). It 
 | Device | Download | Then |
 |---|---|---|
 | Windows 10/11 (ARM64 or x64) | `VoiceAssist-Setup-<version>.exe` | Double-click → Next → Install. No admin rights needed. Open **VoiceAssist** from the Start menu or desktop |
-| Any device with Chrome / Edge — no download | the website link (GitHub Pages) | Open it, create an account, add your Claude, OpenAI or Gemini API key in Settings, talk. **Online only** — for offline use install the app |
+| Any device with Chrome / Edge — no download | the website link (GitHub Pages) | Open it, create an account (or log in with the one from your laptop/phone), talk. **Online only** — for offline use install the app |
 | Android 8.0+ (64-bit phone) | `VoiceAssist-<version>.apk` | Open the file on the phone → allow "install unknown apps" for your browser/Files app when asked → Install |
 
 Both files are built and tested automatically by GitHub Actions (`.github/workflows/build.yml`) and attached
 to every **Release** (and to each Actions run as artifacts). The first time the app opens: create your
-account, then click **Set up offline AI** — it downloads the speech models and a local AI model sized for
+VoiceAssist account (needs internet once; the same account works on the laptop, the phone and the website),
+then click **Set up offline AI** — it downloads the speech models and a local AI model sized for
 your device's memory (on Windows it also installs Ollama silently). After that it works with Wi-Fi off.
 
 ---
@@ -28,12 +30,12 @@ your device's memory (on Windows it also installs Ollama silently). After that i
 | Area | What you get |
 |---|---|
 | Voice | Mic button, **hands-free** continuous conversation with voice-activity detection, **push-to-talk** (hold the button or <kbd>Space</kbd>), **mute/unmute** (<kbd>M</kbd>), **stop speaking** (<kbd>Esc</kbd>), **interrupt by talking** over the assistant (barge-in), follow-up questions without restarting |
-| Speech-to-text | On-device Whisper (tiny/base/small, English or multilingual) via sherpa-onnx; Silero VAD trims silence. Optional OpenAI cloud transcription when online |
-| AI models | Cloud: Claude (Anthropic), OpenAI, Gemini — pick the model in the top bar. Local: any Ollama model (or llama.cpp / LM Studio server) |
-| Text-to-speech | Piper neural voices on-device, streamed sentence-by-sentence so speech starts while the answer is still being written. Fallback: Windows built-in voices. Optional OpenAI cloud voice |
+| Speech-to-text | On-device Whisper (tiny/base/small, English or multilingual) via sherpa-onnx; Silero VAD trims silence. (Website: transcribed by the VoiceAssist cloud, or Chrome's own recognition) |
+| AI models | Cloud: the shared VoiceAssist cloud AI (Gemini free tier behind the product's Supabase project), 50 questions per user per day. Local: any Ollama model (or llama.cpp / LM Studio server) |
+| Text-to-speech | Piper neural voices on-device, streamed sentence-by-sentence so speech starts while the answer is still being written. Fallback: Windows built-in voices. (Website: the browser's voices) |
 | Connectivity | Detects **ONLINE / OFFLINE / AIRPLANE MODE** (airplane mode read from Windows, not guessed), switches to the local model automatically, **asks** before switching back when the internet returns, never loses the conversation |
 | UI | Animated mic, live waveform, speaking animation, transcript with per-answer "cloud" / "on this PC" badges, model picker, history sidebar, settings (voices, mic, speaker, VAD sensitivity, privacy), offline self-test |
-| Privacy | Offline = nothing leaves the PC (enforced: local engines must be on 127.0.0.1). Recordings not stored unless enabled. API keys in Windows Credential Manager. One-click "delete all history". Strict-offline switch blocks every network connection |
+| Privacy | Offline = nothing leaves the PC (enforced: local engines must be on 127.0.0.1). Recordings not stored unless enabled. No AI key on any device — it lives only in the cloud function. One-click "delete all history". Strict-offline switch blocks every network connection |
 
 ## 2. Architecture
 
@@ -46,12 +48,12 @@ your device's memory (on Windows it also installs Ollama silently). After that i
                                          │ HTTP on 127.0.0.1 (per-launch token)
  ┌───────────────────────────────────────▼──────────── Python backend (voiceassist/) ───────┐
  │ server.py ── engine.py (one turn at a time, cancellable)                                  │
- │                 │ 1. STT: stt.py  LocalWhisperSTT (sherpa-onnx)  | OpenAICloudSTT (opt-in) │
+ │                 │ 1. STT: stt.py  LocalWhisperSTT (sherpa-onnx)                            │
  │                 │ 2. history.py  SQLite + context window trimming                          │
- │                 │ 3. LLM: llm/cloud.py  Claude / OpenAI / Gemini (streaming)               │
+ │                 │ 3. LLM: cloud.py  VoiceAssist cloud AI (Supabase "chat" function)        │
  │                 │         llm/local.py  Ollama / OpenAI-compatible localhost server        │
  │                 │    failover: cloud error or connection loss → local model, same turn     │
- │                 │ 4. TTS: tts.py  SentenceChunker → Piper | Windows SAPI | OpenAI (opt-in) │
+ │                 │ 4. TTS: tts.py  SentenceChunker → Piper | Windows SAPI                   │
  │ connectivity.py: airplane flag (registry) + adapters (psutil) + TCP probe → route          │
  │ netutil.py: stdlib HTTP, loopback-only enforcement for local engines, socket guard         │
  └───────────────────────────────────────────────────────────────────────────────────────────┘
@@ -117,18 +119,27 @@ folders plus this project folder (with `.venv`) to the same paths on the offline
 
 Check readiness any time: `python -m voiceassist.setup_models --verify` → `READY FOR OFFLINE USE`.
 
-## 5. Online AI provider configuration
+## 5. The VoiceAssist cloud (shared online AI)
 
-API keys are **never hard-coded or written to the settings file**. Either:
+Nobody using VoiceAssist enters an AI key. Every copy of the app talks to **one Supabase project** that belongs
+to the product:
 
-* **Settings → Online AI → API keys → Save** (stored in Windows Credential Manager under "VoiceAssist"), or
-* environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
-  `setx ANTHROPIC_API_KEY "sk-ant-..."` then restart the app.
+* **Accounts** — Supabase Auth (email + password, reset by email). One account works on all devices.
+* **Cloud AI** — the Edge Function `supabase/functions/chat` checks the user's sign-in, counts the question
+  against the daily limit (`app_config.daily_limit`, default **50 per user per day**, reset at midnight UTC) and
+  streams the answer from **Google Gemini (free tier)**. The Gemini key is a Supabase secret (`GEMINI_API_KEY`) —
+  it is never in the apps, the website or this repository.
+* The apps only carry the project URL and its public "anon" key, in `voiceassist/cloud.json`
+  (also used by the website build and the Android build).
 
-Pick provider and model in the top-bar model menu or Settings → Online AI. Defaults:
-`claude-sonnet-5-5`, `gpt-5.5`, `gemini-3.8-flash` — the model fields are free text, so you can type
-any model ID your account supports. Cloud speech recognition / voice (OpenAI) are **off by default**;
-enable them in Settings → Online AI → Cloud speech.
+Setting up the project (once, by the product owner; all free):
+1. Create a free Supabase project; run `supabase/migrations/*.sql` (SQL editor) and deploy the two functions
+   (`supabase functions deploy chat delete-account`).
+2. Create a free Gemini API key at Google AI Studio and add it in Supabase → Edge Functions → Secrets as `GEMINI_API_KEY`.
+3. Supabase → Authentication → URL configuration: Site URL = the website's address (password-reset links open there).
+4. Put the project URL and anon key into `voiceassist/cloud.json` and build/release.
+
+To change the limit or model: edit the `app_config` table (`daily_limit`, `model`) — no app update needed.
 
 ## 6. Using it
 
@@ -148,40 +159,40 @@ and stops listening. Fix anything that's wrong, then press **Send** (or Enter) �
 * Settings → Diagnostics → **Run offline self-test** proves the full local voice loop works.
 
 ### Switching behaviour
-1. Internet available + API key → cloud model.
+1. Internet available + signed in → the VoiceAssist cloud AI.
 2. Internet lost (detected within ~3–8 s, or immediately when a cloud request fails) → local model.
    If it happens mid-answer, the answer is restarted on the local model automatically.
-3. Internet back → a banner asks "Switch to Claude or stay local?" (or switch automatically:
+3. Internet back → a banner asks "Switch back to the cloud AI or stay local?" (or switch automatically:
    Settings → General → auto switch back).
 4. The conversation history is kept across every switch; the cloud model sees what was said offline.
 5. If network detection is unavailable, the app simply runs locally.
 
 ## 7. Accounts
 
-VoiceAssist opens on a **sign-in page** with two sections, **Log in** and **Sign up**. Accounts are
-**local to this computer**, so they work offline and in airplane mode; nothing is sent to a server.
+VoiceAssist opens on a **sign-in page** with **Log in** and **Sign up**. Accounts are **VoiceAssist cloud
+accounts** (Supabase Auth), so the same email and password work on the laptop, the phone and the website.
 
-* **Sign up:** name, username, optional email, password (8+ characters, letters plus a number or symbol).
-  The first account on a PC takes over any conversations made before accounts existed.
-* **Recovery code:** shown once after sign-up (Copy / Download .txt). There's no email reset because
-  everything is offline — use **Log in → Forgot password?** with this code. Each use issues a new code.
-* **Each account has its own conversation history**; one account can't see or delete another's.
-  App settings (models, voices, microphone) and API keys are shared by everyone on the PC.
-* **Keep me signed in** = 30 days (sliding); unticked = until the window closes (max 12 hours).
-* **Account menu** (bottom of the sidebar) → Account settings: change name/email, change password
-  (other signed-in windows are logged out), new recovery code, log out, delete account (+ its history).
-* Security: passwords hashed with salted scrypt; session tokens are random 256-bit values kept in an
-  HttpOnly, SameSite=Strict cookie and stored only as hashes; 5 wrong passwords lock the account for
-  60 s (doubling up to 15 min); login errors don't reveal which usernames exist.
-* Stored in `%LOCALAPPDATA%\VoiceAssist\accounts.sqlite3`. Deleting that file removes all accounts.
+* **Sign up:** name, email, password (8+ characters, letters plus a number or symbol). Creating an account and
+  logging in need the internet; once signed in, the laptop and phone apps keep working offline.
+* If email confirmation is switched on in Supabase, the app asks you to open the link it emailed, then log in.
+* **Forgot password?** → enter your email → open the link in the email → choose a new password (the link opens
+  the VoiceAssist website).
+* **Each account has its own conversation history**; it is stored on the device you used (not in the cloud).
+  The first cloud account on a computer/phone takes over its older conversations.
+* **Keep me signed in** = 30 days; unticked = until the window closes (max 12 hours).
+* **Account settings** (bottom of the sidebar): change name, change password, log out, delete account
+  (deletes it in the cloud and its history on this device).
+* The window's session is a random 256-bit token in an HttpOnly, SameSite=Strict cookie, stored only as a hash;
+  the Supabase session is kept in `%LOCALAPPDATA%\VoiceAssist\cloud_session.json` (readable only by you).
 
 ## 8. Privacy and data handling
 
 * **Local/offline:** microphone audio is processed in memory by Whisper on this PC, the text goes to
   Ollama on `127.0.0.1`, and the voice is generated locally. The code refuses to send local-engine
   requests anywhere except loopback (`allow_lan` must be enabled explicitly for a LAN server).
-* **Online:** the recognised *text* of your question and recent conversation go to the provider you
-  selected. Audio goes to OpenAI only if you enable cloud speech.
+* **Online:** the recognised *text* of your question and recent conversation go to the VoiceAssist cloud
+  (the product's Supabase project), which passes them to Google Gemini (free tier — Google may use free-tier
+  prompts to improve its products). On the laptop and phone, audio never leaves the device.
 * **Recordings** are not saved unless Settings → Privacy → "Save my voice recordings" is on.
 * **History** is in `%LOCALAPPDATA%\VoiceAssist\history.sqlite3`; turn saving off or delete it all in Settings → Privacy.
 * **Strict offline** (Settings → General) blocks every non-loopback network connection from the app, including connectivity checks.
@@ -210,9 +221,11 @@ recognised in ~0.5 s, **first audio ~1.1–1.8 s after you stop talking**. Bigge
 | "Local model … is not installed" | While online: `ollama pull <model>` (exact command shown in the banner) |
 | "Speech recognition model … is not installed" | `python -m voiceassist.setup_models --stt <model>` |
 | No voice, text only | Install a voice (`--voice en_US-amy-low`) or choose "Windows / system voice" |
-| Cloud answers fail | Check the key (Settings → Online AI), or the model name; the app answers locally meanwhile |
-| Forgot password | Log in → Forgot password? → enter username + recovery code |
-| Lost password AND recovery code | Another account can't reset it (no admin backdoor). Delete `accounts.sqlite3` to remove all accounts (history stays in `history.sqlite3` and goes to the next first account) |
+| "You've used all 50 cloud questions for today" | The limit resets at midnight UTC; meanwhile the offline AI answers (laptop/phone) |
+| "The free AI has reached its limit for the moment" | The shared free Gemini quota is busy; try again in a minute (the offline AI answers meanwhile) |
+| Cloud answers fail | Settings → Cloud AI shows whether this copy is connected; the app answers locally meanwhile |
+| Forgot password | Log in → Forgot password? → enter your email → open the link in the email → choose a new password |
+| "Please confirm your email first" | Open the confirmation link VoiceAssist emailed you, then log in |
 | Window doesn't open | Open the URL printed by `run.bat` (also in `%LOCALAPPDATA%\VoiceAssist\last_url.txt`) |
 
 Logs: `%LOCALAPPDATA%\VoiceAssist\logs\voiceassist.log` (no transcripts are logged).
@@ -225,12 +238,11 @@ voiceassist/
   server.py          local HTTP API + static UI (127.0.0.1, token-protected)
   engine.py          turn pipeline: STT → LLM (failover) → streamed TTS; cancellation/barge-in
   connectivity.py    ONLINE / OFFLINE / AIRPLANE detection and routing policy
-  stt.py  tts.py     on-device + optional cloud speech
-  llm/               cloud.py (Claude, OpenAI, Gemini), local.py (Ollama, OpenAI-compatible)
-  accounts.py        local accounts: scrypt passwords, sessions, lockout, recovery codes
+  stt.py  tts.py     on-device speech
+  cloud.py           VoiceAssist cloud: Supabase accounts + the shared cloud AI; cloud.json = project URL + anon key
+  llm/               local.py (Ollama, OpenAI-compatible localhost server)
   history.py         SQLite conversations (per account) + context trimming
   netutil.py         HTTP, loopback enforcement, offline socket guard
-  secrets_store.py   API keys (env vars / Windows Credential Manager)
   setup_models.py    model downloader + readiness check
   diagnostics.py     offline self-test (blocks all network while running)
   window.py          opens the Edge/Chrome app window
@@ -240,7 +252,8 @@ install.ps1 run.bat selftest.bat requirements.txt
 packaging/windows/   Inno Setup script, payload builder (embedded Python x64 + ARM64), installed-app test
 packaging/android/   emulator end-to-end test (online + airplane mode)
 android/core/        the phone engine in Kotlin: same HTTP API, accounts, routing, cloud + on-device AI
-android/app/         Android shell: WebView (same web/ UI), mic permission, sherpa-onnx speech, Keystore keys
+android/app/         Android shell: WebView (same web/ UI), mic permission, sherpa-onnx speech
+supabase/            the VoiceAssist cloud: database migration (daily limits) + Edge Functions chat, delete-account
 android/llama-jni/   llama.cpp (pinned) + JNI bridge for the on-device language model
 .github/workflows/   builds + tests the Windows installer and the Android APK, publishes releases
 ```
@@ -248,9 +261,9 @@ android/llama-jni/   llama.cpp (pinned) + JNI bridge for the on-device language 
 ### Website edition (online only)
 
 `packaging/web/build_site.py` builds `site/` from the same `web/` UI plus `web/web-engine.js`, which answers the
-UI's `/api` calls inside the browser: accounts (PBKDF2), history and API keys are stored in that browser only;
-answers stream directly from Claude / OpenAI / Gemini; voice input uses OpenAI or Gemini transcription when that
-key is present, otherwise Chrome's speech recognition; replies use the browser's voice or OpenAI's. It has no
+UI's `/api` calls inside the browser: VoiceAssist cloud accounts (the same as on the laptop and phone), history
+in that browser; answers stream from the VoiceAssist cloud AI; voice input is transcribed by the cloud (or Chrome's
+own recognition); replies use the browser's voice. It has no
 offline mode by design: without internet it shows OFFLINE and asks the user to reconnect. CI tests it with
 `tests/e2e_web.py` and publishes it to GitHub Pages.
 
@@ -259,7 +272,7 @@ offline mode by design: without internet it shows OFFLINE and asks the user to r
 The phone runs the same UI (`web/`) in a WebView, talking to a Kotlin engine on `127.0.0.1` that mirrors the
 Python API. On-device pieces: Whisper + Silero VAD + Piper through sherpa-onnx 1.13.8, and llama.cpp (GGUF
 models from Hugging Face: Llama 3.2 1B/3B, Qwen 2.5 0.5B/1.5B). Airplane mode is read from Android settings and
-network changes from `ConnectivityManager`. Cloud API keys are encrypted with an Android Keystore AES-GCM key.
+network changes from `ConnectivityManager`. Cloud answers come from the shared VoiceAssist cloud (no key on the phone).
 While the offline AI downloads, a small notification keeps the download alive if you switch apps.
 iPhone is not included (it requires a paid Apple developer account to install apps outside the App Store).
 

@@ -1,4 +1,4 @@
-"""A fake cloud AI server speaking the real streaming wire formats of Anthropic, OpenAI and Gemini.
+"""A fake cloud AI server: the VoiceAssist cloud "chat" function stream (and the older provider formats).
 
 Used by the tests to exercise the online code path, connection loss mid-answer, outages and
 recovery without real API keys. Control with .mode: "ok" | "drop" (close the socket mid-stream) |
@@ -65,7 +65,7 @@ class FakeCloud:
                 self.wfile.write(b)
 
             def _event(self, text):
-                if self.path.startswith("/v1/messages"):
+                if self.path.startswith("/v1/messages") or self.path.startswith("/functions/v1/chat"):
                     d = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}
                     return f"event: content_block_delta\ndata: {json.dumps(d)}\n\n"
                 if "chat/completions" in self.path:
@@ -75,7 +75,7 @@ class FakeCloud:
                 return ""
 
             def _end(self):
-                if self.path.startswith("/v1/messages"):
+                if self.path.startswith("/v1/messages") or self.path.startswith("/functions/v1/chat"):
                     return 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
                 if "chat/completions" in self.path:
                     return "data: [DONE]\n\n"

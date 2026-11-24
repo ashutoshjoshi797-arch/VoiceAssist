@@ -32,7 +32,7 @@ class AudioStore(private val cap: Int = 256) {
     fun pop(id: String): ByteArray? = synchronized(this) { map.remove(id) }
 }
 
-class Turn(var convId: String?, val userId: Int?) {
+class Turn(var convId: String?, val userId: String?) {
     val id: String = UUID.randomUUID().toString().replace("-", "").take(12)
     val cancel = CancelToken()
     val events = LinkedBlockingQueue<JSONObject>()
@@ -138,17 +138,9 @@ class Engine(private val core: VoiceAssistCore) {
     }
 
     // ------------------------------------------------------------ providers
-    fun buildCloud(): ChatProvider {
-        val provider = settings.str("online.provider", "anthropic")
-        val model = settings.str("online.models.$provider")
-        val key = core.secrets.get(provider) ?: throw AuthError("No API key configured for $provider.", "Add it in Settings → Online AI.")
-        val max = settings.int("online.max_output_tokens", 1024)
-        val timeout = settings.int("online.request_timeout_s", 30)
-        return when (provider) {
-            "openai" -> OpenAIProvider(model, key, max, timeout, System.getProperty("voiceassist.openaiBase") ?: "https://api.openai.com/v1")
-            "gemini" -> GeminiProvider(model, key, max, timeout, System.getProperty("voiceassist.geminiBase") ?: "https://generativelanguage.googleapis.com")
-            else -> AnthropicProvider(model, key, max, timeout, System.getProperty("voiceassist.anthropicBase") ?: "https://api.anthropic.com")
-        }
+    fun buildCloud(userId: String?): ChatProvider {
+        if (!core.accounts.configured) throw AuthError("This copy isn't connected to the VoiceAssist cloud.")
+        return VoiceAssistCloudProvider(core.accounts, userId, settings.int("online.max_output_tokens", 1024), settings.int("online.request_timeout_s", 30))
     }
 
     fun buildLocal(): ChatProvider {
@@ -159,7 +151,7 @@ class Engine(private val core: VoiceAssistCore) {
     }
 
     // ------------------------------------------------------------ turns
-    fun startTurn(convId: String?, wav: ByteArray?, text: String?, userId: Int?): Turn {
+    fun startTurn(convId: String?, wav: ByteArray?, text: String?, userId: String?): Turn {
         val t = Turn(convId, userId)
         synchronized(this) { current?.cancel?.cancel(); current = t }
         Thread({
@@ -219,7 +211,7 @@ class Engine(private val core: VoiceAssistCore) {
 
         val routes = if (route == "online") listOf("online", "local") else listOf("local")
         for (attempt in routes) {
-            val provider = try { if (attempt == "online") buildCloud() else buildLocal() } catch (e: AuthError) {
+            val provider = try { if (attempt == "online") buildCloud(turn.userId) else buildLocal() } catch (e: AuthError) {
                 if (attempt == "online") continue
                 turn.put("error", "message" to e.message, "hint" to e.hint); return
             }
@@ -331,9 +323,10 @@ class Engine(private val core: VoiceAssistCore) {
             turn.put("cancelled", "stage" to "speech", "partial" to answer); return "cancelled"
         }
         if (answer.isEmpty()) { turn.put("error", "message" to "${provider.label} returned an empty answer."); return "error" }
+        val done = provider.describe()   // now includes the cloud's "questions left today"
         val mid = core.history.add(cid, "assistant", answer, info)
         val now = System.currentTimeMillis()
-        turn.put("done", "spoken" to (speech.seq > 0), "message_id" to mid, "conversation_id" to cid, "provider" to info,
+        turn.put("done", "spoken" to (speech.seq > 0), "message_id" to mid, "conversation_id" to cid, "provider" to done,
             "timings" to jsonOf("stt_s" to sttSeconds, "first_token_s" to tFirst?.let { (it - t0) / 1000.0 },
                 "first_audio_s" to speech.firstAudioAt?.let { (it - turn.started) / 1000.0 }, "total_s" to (now - turn.started) / 1000.0))
         return "ok"

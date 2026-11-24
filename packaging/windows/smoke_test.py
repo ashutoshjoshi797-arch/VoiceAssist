@@ -3,11 +3,12 @@
 Run with the installed embedded Python:
     %LOCALAPPDATA%\\Programs\\VoiceAssist\\python\\python.exe packaging\\windows\\smoke_test.py
 
-1. starts the installed engine        2. signs up an account through the API
-3. one-click offline setup: downloads + silently installs Ollama, pulls a small model (real Windows path)
-4. typed question -> local answer + spoken audio
-5. spoken question (WAV) -> Windows Whisper -> local answer
-6. the offline self-test with all network access blocked
+1. starts the installed engine        2. signs up a VoiceAssist cloud account (test cloud: tests/fake_supabase.py)
+3. a typed question answered by the shared cloud AI (no AI key anywhere)
+4. one-click offline setup: downloads + silently installs Ollama, pulls a small model (real Windows path)
+5. typed question -> local answer + spoken audio
+6. spoken question (WAV) -> Windows Whisper -> local answer
+7. the offline self-test with all network access blocked
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from pathlib import Path
 APP = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "VoiceAssist"
 DATA = Path(os.environ["LOCALAPPDATA"]) / "VoiceAssist"
 MODEL = os.environ.get("SMOKE_MODEL", "qwen2.5:0.5b")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
+from fake_supabase import ANON_KEY, FakeSupabase  # noqa: E402
 results: list[tuple[str, bool, str]] = []
 
 
@@ -62,13 +65,15 @@ def main() -> int:
     py = APP / "python" / "python.exe"
     check("installed files present", py.exists() and (APP / "app" / "voiceassist").is_dir() and (APP / "voiceassist.ico").exists(), str(APP))
     check("speech models installed", (DATA / "models" / "stt").is_dir() and (DATA / "models" / "tts").is_dir())
-    imp = subprocess.run([str(py), "-c", "import sherpa_onnx, numpy, keyring, psutil, voiceassist, platform; "
+    imp = subprocess.run([str(py), "-c", "import sherpa_onnx, numpy, psutil, voiceassist, platform; "
                           "print(sherpa_onnx.__version__, platform.machine(), voiceassist.__version__)"],
                          capture_output=True, text=True, cwd=APP / "app")
     check("embedded Python loads all packages", imp.returncode == 0, (imp.stdout or imp.stderr).strip()[-300:])
 
     (DATA / "last_url.txt").unlink(missing_ok=True)
-    proc = subprocess.Popen([str(py), "-m", "voiceassist", "--no-window", "--port", "8765"], cwd=APP / "app",
+    cloud = FakeSupabase(limit=50).start()
+    env = {**os.environ, "VOICEASSIST_SUPABASE_URL": cloud.url, "VOICEASSIST_SUPABASE_KEY": ANON_KEY}
+    proc = subprocess.Popen([str(py), "-m", "voiceassist", "--no-window", "--port", "8765"], cwd=APP / "app", env=env,
                             stdout=open(DATA.parent / "va-smoke.log", "w"), stderr=subprocess.STDOUT)
     try:
         for _ in range(120):
@@ -79,10 +84,18 @@ def main() -> int:
         api = Api((DATA / "last_url.txt").read_text().strip())
         st, v = api.json("GET", "/api/version")
         check("engine started", st == 200, json.dumps(v))
-        st, r = api.json("POST", "/api/auth/signup", {"username": "smoketest", "password": "smoke-test-123"})
-        check("account sign-up", st == 201 and "recovery_code" in r, str(st))
+        st, r = api.json("POST", "/api/auth/signup", {"email": "smoke@example.com", "password": "smoke-test-123", "display_name": "Smoke"})
+        check("cloud account sign-up", st == 201 and r.get("user", {}).get("email") == "smoke@example.com", str(st))
         st, s = api.json("GET", "/api/state")
         check("network detected", st == 200, f"{s['network']['state']} — {s['network']['detail']}")
+        check("connected to the VoiceAssist cloud (no AI key)", s.get("cloud", {}).get("configured") is True and "keys" not in s)
+
+        evs = api.turn(body={"text": "What is the capital of France?"})
+        answer = "".join(e["text"] for e in evs if e["type"] == "token")
+        done = next((e for e in evs if e["type"] == "done"), {})
+        check("typed question answered by the shared cloud AI", "paris" in answer.lower() and cloud.chat_bodies,
+              f"{answer[:80]} (questions left: {done.get('provider', {}).get('questions_left')})")
+        api.json("POST", "/api/settings", {"mode": "local"})   # the rest of this test is the offline path
 
         st, job = api.json("POST", "/api/setup/start", {"model": MODEL})
         check("one-click offline setup started", st == 200, job.get("step", ""))
@@ -96,6 +109,11 @@ def main() -> int:
             if job.get("state") in ("done", "error"):
                 break
             time.sleep(3)
+        for _ in range(20):   # "ready" is re-checked just after the job reports done
+            if s.get("ready") or job.get("state") != "done":
+                break
+            time.sleep(1)
+            st, s = api.json("GET", "/api/setup/status")
         check("offline setup installed Ollama + model", job.get("state") == "done" and s["ready"], job.get("step", ""))
 
         evs = api.turn(body={"text": "What is the capital of France? Answer in one short sentence."})
@@ -111,6 +129,7 @@ def main() -> int:
         check("spoken question recognised by Whisper on Windows", "germany" in heard.lower(), heard)
         check("spoken question answered", bool(answer.strip()), answer[:120])
     finally:
+        cloud.stop()
         proc.terminate()
         try:
             proc.wait(10)

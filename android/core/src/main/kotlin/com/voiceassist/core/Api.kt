@@ -14,7 +14,7 @@ class Api(private val core: VoiceAssistCore) {
         "connect-src 'self'; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 
     private class Ctx(val req: Request, val res: Response, val user: JSONObject?) {
-        val uid get() = user!!.getInt("id")
+        val uid: String get() = user!!.getString("id")
         fun json(): JSONObject = if (req.body.isEmpty()) JSONObject() else JSONObject(String(req.body, Charsets.UTF_8))
     }
 
@@ -33,8 +33,12 @@ class Api(private val core: VoiceAssistCore) {
             json(res, jsonOf("error" to e.message, "field" to e.field), e.status)
         } catch (e: SetupError) {
             err(res, 400, e.message ?: "setup error")
+        } catch (e: AuthError) {
+            json(res, jsonOf("error" to e.message, "hint" to e.hint, "auth" to "cloud"), 401)
         } catch (e: LlmError) {
             err(res, 502, e.message ?: "error", e.hint)
+        } catch (e: NetworkError) {
+            err(res, 503, "You're offline — this needs the internet.", "Your questions are still answered by the offline AI on this phone.")
         } catch (e: IllegalArgumentException) {
             err(res, 400, e.message ?: "bad request")
         } catch (e: IOException) {
@@ -60,17 +64,20 @@ class Api(private val core: VoiceAssistCore) {
     }
 
     private fun startSession(c: Ctx, user: JSONObject, remember: Boolean) {
-        val (token, maxAge) = core.accounts.createSession(user.getInt("id"), remember)
+        val (token, maxAge) = core.accounts.createSession(user.getString("id"), remember)
         c.res.setCookie = "$sessionCookie=$token; Path=/; HttpOnly; SameSite=Strict" + (maxAge?.let { "; Max-Age=$it" } ?: "")
     }
 
     private fun clearCookie(c: Ctx) { c.res.setCookie = "$sessionCookie=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" }
 
-    private fun keysStatus() = JSONObject().also { o ->
-        listOf("anthropic", "openai", "gemini").forEach { p ->
-            val has = !core.secrets.get(p).isNullOrEmpty()
-            o.put(p, jsonOf("configured" to has, "source" to if (has) "secure-storage" else null))
+    private fun signedIn(c: Ctx, user: JSONObject, remember: Boolean, status: Int = 200) {
+        var claimed = 0
+        if (!core.accounts.legacyClaimed) {   // the first cloud account on this phone gets its older conversations
+            claimed = core.history.claimOrphans(user.getString("id"))
+            core.accounts.markLegacyClaimed()
         }
+        startSession(c, user, remember)
+        json(c.res, jsonOf("user" to user, "claimed_conversations" to claimed), status)
     }
 
     private fun state(user: JSONObject?): JSONObject {
@@ -80,8 +87,8 @@ class Api(private val core: VoiceAssistCore) {
         val voices = JSONObject().also { o -> ModelCatalog.VOICES.forEach { o.put(it, jsonOf("note" to it.replace('_', ' '))) } }
         val recommended = jsonArrayOf(ModelCatalog.LLM.map { jsonOf("tag" to it.tag, "ram_gb" to it.ramGb, "size_gb" to it.sizeGb, "note" to it.note) })
         return jsonOf("version" to Version.NAME, "platform" to core.platform.name, "settings" to core.settings.snapshot(),
-            "network" to core.conn.snapshot(), "route" to jsonOf("route" to route, "reason" to reason), "keys" to keysStatus(),
-            "credential_store" to core.secrets.available(), "stt" to core.sttStatus(), "tts" to core.ttsStatus(),
+            "network" to core.conn.snapshot(), "route" to jsonOf("route" to route, "reason" to reason),
+            "cloud" to jsonOf("configured" to core.accounts.configured, "label" to "VoiceAssist cloud AI"), "stt" to core.sttStatus(), "tts" to core.ttsStatus(),
             "local" to JSONObject(core.engine.localStatus.toString()).put("running", true).put("installed", jsonArrayOf(installed)).put("recommended", recommended),
             "catalog" to jsonOf("stt" to sttCatalog, "voices" to voices),
             "data_dir" to core.paths.root.path, "models_dir" to core.paths.models.path, "user" to user)
@@ -94,45 +101,37 @@ class Api(private val core: VoiceAssistCore) {
         when {
             m == "GET" && p == "/api/version" -> json(c.res, jsonOf("version" to Version.NAME))
             m == "GET" && p == "/api/state" -> json(c.res, state(c.user))
-            m == "GET" && p == "/api/auth/me" -> json(c.res, jsonOf("user" to c.user, "has_accounts" to (core.accounts.count() > 0), "platform" to core.platform.name))
+            m == "GET" && p == "/api/auth/me" -> json(c.res, jsonOf("user" to c.user, "has_accounts" to true, "platform" to core.platform.name,
+                "cloud" to core.accounts.configured))
             m == "POST" && p == "/api/auth/signup" -> {
                 val b = c.json()
-                val first = core.accounts.count() == 0
-                val (u, code) = core.accounts.signup(b.optString("username"), b.optString("password"), b.optString("display_name"), b.optString("email"))
-                val claimed = if (first) core.history.claimOrphans(u.getInt("id")) else 0
-                startSession(c, u, b.optBoolean("remember", true))
-                json(c.res, jsonOf("user" to u, "recovery_code" to code, "claimed_conversations" to claimed), 201)
+                val (u, confirm) = core.accounts.signup(b.optString("email"), b.optString("password"), b.optString("display_name"))
+                if (confirm || u == null) json(c.res, jsonOf("needs_confirmation" to true, "email" to b.optString("email").trim()), 202)
+                else signedIn(c, u, b.optBoolean("remember", true), 201)
             }
             m == "POST" && p == "/api/auth/login" -> {
                 val b = c.json()
-                val u = core.accounts.login(b.optString("username"), b.optString("password"))
-                startSession(c, u, b.optBoolean("remember", true))
-                json(c.res, jsonOf("user" to u))
+                signedIn(c, core.accounts.login(b.optString("email"), b.optString("password")), b.optBoolean("remember", true))
             }
             m == "POST" && p == "/api/auth/logout" -> {
                 core.accounts.endSession(c.req.cookie(sessionCookie)); core.engine.cancel(); clearCookie(c); json(c.res, jsonOf("ok" to true))
             }
             m == "POST" && p == "/api/auth/recover" -> {
-                val b = c.json()
-                val (u, code) = core.accounts.resetWithRecovery(b.optString("username"), b.optString("code"), b.optString("new_password"))
-                startSession(c, u, b.optBoolean("remember", true))
-                json(c.res, jsonOf("user" to u, "recovery_code" to code))
+                core.accounts.requestPasswordReset(c.json().optString("email")); json(c.res, jsonOf("ok" to true))
             }
-            m == "POST" && p == "/api/account/profile" -> {
-                val b = c.json()
-                json(c.res, jsonOf("user" to core.accounts.updateProfile(c.uid, b.optString("display_name", null), b.optString("email", null))))
-            }
+            m == "POST" && p == "/api/account/profile" ->
+                json(c.res, jsonOf("user" to core.accounts.updateProfile(c.uid, c.json().optString("display_name", null))))
             m == "POST" && p == "/api/account/password" -> {
                 val b = c.json()
-                core.accounts.changePassword(c.uid, b.optString("current_password"), b.optString("new_password"), c.req.cookie(sessionCookie))
+                core.accounts.changePassword(c.uid, b.optString("current_password"), b.optString("new_password"))
                 json(c.res, jsonOf("ok" to true))
             }
-            m == "POST" && p == "/api/account/recovery" -> json(c.res, jsonOf("recovery_code" to core.accounts.regenerateRecovery(c.uid, c.json().optString("password"))))
             m == "POST" && p == "/api/account/delete" -> {
                 val uid = c.uid
                 core.accounts.delete(uid, c.json().optString("password"))
                 core.history.clear(uid); core.engine.cancel(); clearCookie(c); json(c.res, jsonOf("ok" to true))
             }
+            m == "GET" && p == "/api/cloud/usage" -> json(c.res, core.accounts.usage(c.uid))
             m == "GET" && p == "/api/setup/status" -> json(c.res, core.setup.status())
             m == "POST" && p == "/api/setup/start" -> json(c.res, core.setup.start(c.json().optString("model", null)))
             m == "POST" && p == "/api/setup/cancel" -> { core.setup.cancel(); json(c.res, jsonOf("ok" to true)) }
@@ -149,14 +148,6 @@ class Api(private val core: VoiceAssistCore) {
                 val s = core.settings.update(c.json())
                 core.bus.publish(jsonOf("type" to "settings", "settings" to s), sticky = false)
                 json(c.res, jsonOf("ok" to true, "settings" to s))
-            }
-            m == "POST" && p == "/api/keys" -> {
-                val b = c.json()
-                val prov = b.optString("provider")
-                require(prov in setOf("anthropic", "openai", "gemini")) { "unknown provider" }
-                core.secrets.set(prov, b.optString("key").trim().ifEmpty { null })
-                core.conn.poke()
-                json(c.res, jsonOf("ok" to true, "keys" to keysStatus()))
             }
             m == "POST" && p == "/api/switch_back" -> {
                 core.conn.acceptSwitchBack(c.json().optBoolean("accept"))

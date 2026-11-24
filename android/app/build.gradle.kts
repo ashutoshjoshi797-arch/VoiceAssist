@@ -16,8 +16,8 @@ android {
         applicationId = "com.voiceassist.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 111
-        versionName = "1.1.1"
+        versionCode = 120
+        versionName = "1.2.0"
         ndk { abiFilters += abis }
         externalNativeBuild {
             cmake {
@@ -66,9 +66,11 @@ android {
 }
 
 // The phone uses exactly the same web UI as the desktop app (../../web), copied into the APK's assets.
+// The VoiceAssist cloud address and its public (anon) key come from ../voiceassist/cloud.json — no AI key is in the app.
 val copyWebAssets by tasks.registering(Copy::class) {
-    from(rootProject.file("../web"))
-    into(layout.buildDirectory.dir("generated/webassets/web"))
+    into(layout.buildDirectory.dir("generated/webassets"))
+    from(rootProject.file("../web")) { into("web") }
+    from(rootProject.file("../voiceassist/cloud.json"))
 }
 tasks.named("preBuild") { dependsOn(copyWebAssets) }
 

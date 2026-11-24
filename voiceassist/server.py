@@ -21,8 +21,9 @@ from pathlib import Path
 
 from http.cookies import SimpleCookie
 
-from . import __version__, models_catalog, paths, secrets_store
-from .accounts import AccountError, AccountStore
+from . import __version__, models_catalog, paths
+from .accounts import AccountError
+from .cloud import CloudAccounts
 from .llm import RECOMMENDED_MODELS, LLMError, build_local
 from .setup_wizard import LocalAISetup, SetupError
 from .stt import STTError
@@ -37,9 +38,11 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
 class App:
     """Glue object holding all services; passed to the request handler."""
 
-    def __init__(self, settings, conn, history, engine, bus, accounts: AccountStore | None = None):
+    def __init__(self, settings, conn, history, engine, bus, accounts: CloudAccounts | None = None):
         self.settings, self.conn, self.history, self.engine, self.bus = settings, conn, history, engine, bus
-        self.accounts = accounts or AccountStore(str(paths.accounts_db_path()))
+        self.accounts = accounts or CloudAccounts()
+        engine.cloud_accounts = self.accounts
+        conn.cloud_ready = lambda: self.accounts.configured
         self.setup = LocalAISetup(settings, engine, bus)
         self.token = secrets.token_urlsafe(24)
         self.port = 0
@@ -59,8 +62,7 @@ class App:
             "settings": self.settings.snapshot(),
             "network": self.conn.snapshot(),
             "route": {"route": route, "reason": reason},
-            "keys": secrets_store.status(),
-            "credential_store": secrets_store.credential_store_available(),
+            "cloud": {"configured": self.accounts.configured, "label": "VoiceAssist cloud AI"},
             "stt": self.engine.stt.status(),
             "tts": self.engine.tts.status(),
             "local": {**self.engine.local_status, "running": local_running, "installed": local_models,
@@ -232,23 +234,29 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------ accounts
     def api_auth_me(self, q):
-        self._json({"user": self.user, "has_accounts": self.app.accounts.count() > 0, "platform": "desktop"})
+        self._json({"user": self.user, "has_accounts": True, "platform": "desktop", "cloud": self.app.accounts.configured})
+
+    def _signed_in(self, user: dict, remember: bool, status: int = 200) -> None:
+        claimed = 0
+        if not self.app.accounts.db.get("legacy_claimed"):   # first cloud account on this computer gets its old chats
+            claimed = self.app.history.claim_orphans(user["id"])
+            self.app.accounts.db["legacy_claimed"] = user["id"]
+            self.app.accounts._save()
+        self._start_session(user, remember)
+        self._json({"user": user, "claimed_conversations": claimed}, status)
 
     def api_auth_signup(self, q):
         b = self._json_body()
-        first = self.app.accounts.count() == 0
-        user, code = self.app.accounts.signup(b.get("username", ""), b.get("password", ""),
-                                              b.get("display_name", ""), b.get("email", ""))
-        claimed = self.app.history.claim_orphans(user["id"]) if first else 0
-        self._start_session(user, bool(b.get("remember", True)))
-        log.info("account created (id %s)", user["id"])
-        self._json({"user": user, "recovery_code": code, "claimed_conversations": claimed}, 201)
+        user, confirm = self.app.accounts.signup(b.get("email", ""), b.get("password", ""), b.get("display_name", ""))
+        if confirm:
+            return self._json({"needs_confirmation": True, "email": b.get("email", "").strip()}, 202)
+        log.info("cloud account created")
+        self._signed_in(user, bool(b.get("remember", True)), 201)
 
     def api_auth_login(self, q):
         b = self._json_body()
-        user = self.app.accounts.login(b.get("username", ""), b.get("password", ""))
-        self._start_session(user, bool(b.get("remember", True)))
-        self._json({"user": user})
+        user = self.app.accounts.login(b.get("email", ""), b.get("password", ""))
+        self._signed_in(user, bool(b.get("remember", True)))
 
     def api_auth_logout(self, q):
         self.app.accounts.end_session(self._session_token())
@@ -257,10 +265,14 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True})
 
     def api_auth_recover(self, q):
-        b = self._json_body()
-        user, code = self.app.accounts.reset_with_recovery(b.get("username", ""), b.get("code", ""), b.get("new_password", ""))
-        self._start_session(user, bool(b.get("remember", True)))
-        self._json({"user": user, "recovery_code": code})
+        self.app.accounts.request_password_reset(self._json_body().get("email", ""))
+        self._json({"ok": True})
+
+    def api_cloud_usage(self, q):
+        try:
+            self._json(self.app.accounts.usage(self.user["id"]))
+        except Exception as e:  # noqa: BLE001
+            self._err(503, str(e))
 
     def api_account_profile(self, q):
         b = self._json_body()
@@ -271,10 +283,6 @@ class Handler(BaseHTTPRequestHandler):
         self.app.accounts.change_password(self.user["id"], b.get("current_password", ""), b.get("new_password", ""),
                                           keep_token=self._session_token())
         self._json({"ok": True})
-
-    def api_account_recovery(self, q):
-        code = self.app.accounts.regenerate_recovery(self.user["id"], self._json_body().get("password", ""))
-        self._json({"recovery_code": code})
 
     def api_account_delete(self, q):
         b = self._json_body()
@@ -334,7 +342,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._json(self.app.engine.transcribe_only(self._body()))
         except STTError as e:
-            self._err(400, str(e), getattr(e, "hint", ""))
+            self._err(400, str(e), e.hint)
         except Exception as e:
             self._err(400, f"Could not read the recorded audio: {e}")
 
@@ -356,16 +364,6 @@ class Handler(BaseHTTPRequestHandler):
         new = self.app.settings.update(patch)
         self.app.bus.publish({"type": "settings", "settings": new}, sticky=False)
         self._json({"ok": True, "settings": new})
-
-    def api_keys(self, q):
-        body = self._json_body()
-        provider = body.get("provider")
-        try:
-            secrets_store.set_key(provider, body.get("key", ""))
-        except RuntimeError as e:
-            return self._err(400, str(e))
-        self.app.conn.poke()
-        self._json({"ok": True, "keys": secrets_store.status()})
 
     def api_switch_back(self, q):
         self.app.conn.accept_switch_back(bool(self._json_body().get("accept")))
@@ -454,7 +452,7 @@ ROUTES_EXACT = {
     ("POST", "/api/auth/recover"): Handler.api_auth_recover,
     ("POST", "/api/account/profile"): Handler.api_account_profile,
     ("POST", "/api/account/password"): Handler.api_account_password,
-    ("POST", "/api/account/recovery"): Handler.api_account_recovery,
+    ("GET", "/api/cloud/usage"): Handler.api_cloud_usage,
     ("POST", "/api/account/delete"): Handler.api_account_delete,
     ("GET", "/api/events"): Handler.api_events,
     ("POST", "/api/turn"): Handler.api_turn,
@@ -462,7 +460,6 @@ ROUTES_EXACT = {
     ("POST", "/api/cancel"): Handler.api_cancel,
     ("GET", "/api/settings"): Handler.api_settings_get,
     ("POST", "/api/settings"): Handler.api_settings_post,
-    ("POST", "/api/keys"): Handler.api_keys,
     ("POST", "/api/switch_back"): Handler.api_switch_back,
     ("POST", "/api/network/recheck"): Handler.api_recheck,
     ("GET", "/api/conversations"): Handler.api_conversations,

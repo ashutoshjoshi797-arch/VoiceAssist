@@ -175,8 +175,7 @@ class Mic {
   constructor() { this.stream = null; this.ctx = null; this.node = null; this.analyser = null; this.sr = 48000; this.onFrame = null; this.deviceId = ""; }
   get active() { return !!this.stream; }
   /** Windows refused the microphone ("busy or blocked"). Often only one device or one audio-processing mode fails —
-   *  e.g. the driver's own sound effects clash with echo cancellation, or the default device is a headset that isn't
-   *  connected — so try plain audio, then every other microphone. */
+   *  e.g. the default device is a headset that isn't connected — so try plain audio, then every other microphone. */
   async fallbackStream(firstError) {
     const gum = (c) => navigator.mediaDevices.getUserMedia({ audio: c });
     await new Promise((r) => setTimeout(r, 400));
@@ -524,6 +523,11 @@ function handleEvent(t, ev) {
     case "cancelled": break;
     case "done": {
       t.done = true; player.turnDone = true;
+      if (ev.provider?.questions_left != null) {
+        cloudUsage = { ...(cloudUsage || { limit: ev.provider.daily_limit || 50 }), left: ev.provider.questions_left };
+        if (ev.provider.questions_left <= 5) toast(`${ev.provider.questions_left} cloud question${ev.provider.questions_left === 1 ? "" : "s"} left today`, 3500);
+        renderCloudInfo();
+      }
       if (t.botRow) {
         t.botRow.querySelector(".bubble").classList.remove("cursor");
         const tm = ev.timings || {};
@@ -557,8 +561,7 @@ function updateRoute(r) {
   const st = S.settings; if (!st) return;
   const el = $("#route-label");
   if (r.route === "online") {
-    const p = st.online.provider, model = st.online.models[p];
-    el.innerHTML = `Answering with <b>${esc(model)}</b> · cloud`;
+    el.innerHTML = `Answering with <b>VoiceAssist cloud AI</b>`;
   } else if (WEB()) {
     el.innerHTML = `<b>Offline</b> — reconnect to the internet to keep talking`;
   } else {
@@ -571,51 +574,40 @@ function updateRoute(r) {
 
 function updatePrivacyLine() {
   const st = S.settings; if (!st || !S.route) return;
-  const providerName = { anthropic: "Anthropic (Claude)", openai: "OpenAI", gemini: "Google (Gemini)" }[st.online.provider];
+  const providerName = "the VoiceAssist cloud";
   let html;
   if (WEB()) {
     html = S.route.route === "offline" ? "⚠ <b>No internet.</b> The website works online only — reconnect, or use the installed app for offline use."
-      : `☁ Your question is sent to <b>${esc(providerName)}</b>. Your account, history and API keys stay in this browser.`;
+      : `☁ Your question is answered by <b>${esc(providerName)}</b>. Your conversation history stays in this browser.`;
     $("#privacy-line").innerHTML = html;
     const pb = $("#privacy-box");
     if (pb) pb.innerHTML = `<b>How your data is handled (website)</b><ul>
-      <li>Your account, conversation history and API keys are stored only in this browser on this device. Nothing is stored on a VoiceAssist server.</li>
-      <li>The text of your question and recent conversation goes directly from this browser to ${esc(providerName)}.</li>
-      <li>Voice input is recognised by OpenAI or Gemini when you've added that key, otherwise by Chrome's speech service (Google).</li>
-      <li>Replies are spoken by your browser's own voice${st.web?.tts === "openai" ? ", or by OpenAI if you chose that voice" : ""}.</li>
-      <li>Clearing this site's data in your browser deletes everything.</li></ul>`;
+      <li>Your account (email and name) is kept by the VoiceAssist cloud, so the same login works everywhere.</li>
+      <li>Your conversation history is stored only in this browser on this device.</li>
+      <li>The text of your question and recent conversation is sent to the VoiceAssist cloud, which asks Google's Gemini AI for the answer.</li>
+      <li>Voice input is turned into text by the VoiceAssist cloud${st.web?.stt === "browser" ? " (you chose Chrome's own speech recognition instead)" : ""}. Replies are spoken by your browser's voice.</li></ul>`;
     return;
   }
   if (S.route.route === "local") html = `🔒 <b>Everything stays on this ${devLong()}</b> — speech recognition, AI and voice run locally.`;
   else {
-    const sttCloud = st.online.cloud_stt, ttsCloud = st.online.cloud_tts;
-    html = `☁ Your recognised <b>text</b> is sent to <b>${esc(providerName)}</b>. ` +
-      (sttCloud ? "Your <b>voice audio</b> is sent to OpenAI for recognition. " : `Your voice audio stays on this ${devLong()}. `) +
-      (ttsCloud ? "Replies are voiced by OpenAI." : "Replies are voiced locally.");
+    html = `☁ Your question (as <b>text</b>) is answered by <b>${esc(providerName)}</b>. Your voice audio stays on this ${devLong()}, and replies are voiced on this ${devLong()}.`;
   }
   $("#privacy-line").innerHTML = html;
   const pb = $("#privacy-box");
   if (pb) pb.innerHTML = `<b>How your data is handled</b><ul>
     <li><b>Offline / Local only:</b> audio, transcripts and answers never leave this ${devLong()}. The app only talks to 127.0.0.1.</li>
-    <li><b>Online:</b> the text of your question and recent conversation is sent to the cloud provider you chose (${esc(providerName)}). Audio is sent only if you enable cloud speech.</li>
+    <li><b>Online:</b> the text of your question and recent conversation is sent to the VoiceAssist cloud, which asks Google's Gemini AI. Your voice audio never leaves this ${devLong()}.</li>
     <li>Recordings are ${st.privacy.save_recordings ? "<b>saved</b> to the recordings folder" : "<b>not saved</b> (kept in memory only while being recognised)"}.</li>
     <li>History is ${st.privacy.save_history ? "saved locally in a SQLite file" : "kept in memory only and erased on exit"}.</li>
-    <li>API keys live in the Windows Credential Manager or environment variables — never in the settings file.</li></ul>`;
+    <li>Your account (email and name) is kept by the VoiceAssist cloud so the same login works on all your devices. Your conversation history stays on this ${devLong()}.</li></ul>`;
 }
 
 // ------------------------------------------------------------------ model selector
 function syncModelSelect() {
   const st = S.settings; if (!st) return;
   const sel = $("#model-select");
-  const cur = S.route?.route === "online" ? `cloud|${st.online.provider}|${st.online.models[st.online.provider]}` : `local|${st.local.model}`;
-  const labels = { anthropic: "Claude", openai: "OpenAI", gemini: "Gemini" };
-  let html = "";
-  for (const p of ["anthropic", "openai", "gemini"]) {
-    const choices = new Set([...(st.online.model_choices[p] || []), st.online.models[p]]);
-    const keyOk = S.state?.keys?.[p]?.configured;
-    html += `<optgroup label="☁ ${labels[p]}${keyOk ? "" : " (no API key)"}">` +
-      [...choices].map((m) => `<option value="cloud|${p}|${esc(m)}">${esc(m)}</option>`).join("") + "</optgroup>";
-  }
+  const cur = st.mode !== "local" ? "cloud" : `local|${st.local.model}`;
+  let html = `<optgroup label="☁ Online"><option value="cloud">VoiceAssist cloud AI${WEB() ? "" : " (offline AI when no internet)"}</option></optgroup>`;
   const locals = new Set([...(S.localModels || []), st.local.model]);
   if (!WEB()) html += `<optgroup label="🔒 On this ${devLong()}">` + [...locals].map((m) => `<option value="local|${esc(m)}">${esc(m)}${S.localModels.includes(m) ? "" : " (not installed)"}</option>`).join("") + "</optgroup>";
   sel.innerHTML = html; sel.value = cur;
@@ -625,10 +617,8 @@ function syncModelSelect() {
 async function onModelSelect(v) {
   const parts = v.split("|");
   if (parts[0] === "cloud") {
-    const [, p, ...rest] = parts; const m = rest.join("|");
-    await saveSettings({ mode: "auto", online: { provider: p, models: { [p]: m } } });
-    if (!S.state.keys[p].configured) { toast("Add an API key in Settings → Online AI to use " + m); openSettings("online"); }
-    else if (S.route?.route !== "online") toast(`${m} will be used when the internet is available`);
+    await saveSettings({ mode: "auto" });
+    if (S.route?.route !== "online") toast(WEB() ? "You're offline — reconnect to keep talking" : "The cloud AI will be used when the internet is available");
   } else {
     await saveSettings({ mode: "local", local: { model: parts.slice(1).join("|") } });
     toast("Local only — answers come from " + parts.slice(1).join("|") + ` on this ${devLong()}`);
@@ -656,9 +646,6 @@ function fillSettingsForm() {
   }
   $("#speed-val").textContent = Number(st.tts.speed).toFixed(2) + "×";
   $("#sens-val").textContent = Math.round(st.ui.vad_sensitivity * 100) + "%";
-  for (const p of ["anthropic", "openai", "gemini"]) {
-    const dl = $("#dl-" + p); dl.innerHTML = (st.online.model_choices[p] || []).map((m) => `<option value="${esc(m)}">`).join("");
-  }
 }
 
 function bindSettingsForm() {
@@ -673,28 +660,13 @@ function bindSettingsForm() {
       el.addEventListener("input", () => { if (el.dataset.setting === "tts.speed") $("#speed-val").textContent = Number(el.value).toFixed(2) + "×"; else $("#sens-val").textContent = Math.round(el.value * 100) + "%"; });
     } else el.addEventListener("change", handler);
   }
-  for (const row of $$(".key-row")) {
-    row.querySelector("button").onclick = async () => {
-      const key = row.querySelector("input").value;
-      try {
-        await api("/api/keys", { method: "POST", json: { provider: row.dataset.provider, key } });
-        row.querySelector("input").value = ""; toast(key ? "API key saved securely" : "API key removed");
-        await refreshState();
-      } catch (e) { toast(e.message, 5000); }
-    };
-  }
+  $("#btn-cloud-usage").onclick = refreshCloudUsage;
 }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
 function renderStatusPanels() {
   const s = S.state; if (!s) return;
-  // keys
-  for (const row of $$(".key-row")) {
-    const k = s.keys[row.dataset.provider]; const em = row.querySelector("em");
-    em.textContent = k.configured ? `✓ configured (${k.source})` : "not configured";
-    em.className = k.configured ? "ok" : "";
-  }
-  if (!s.credential_store) $$(".key-row em").forEach((em) => { if (!em.classList.contains("ok")) em.textContent = "no credential store — use environment variables"; });
+  renderCloudInfo();
   // stt models
   const sttSel = $("#stt-model-select");
   sttSel.innerHTML = Object.entries(s.catalog.stt).map(([k, m]) => `<option value="${k}">${k} — ${esc(m.note)}${s.stt.available.includes(k) ? "" : " (not downloaded)"}</option>`).join("");
@@ -711,6 +683,21 @@ function renderStatusPanels() {
   $("#history-mode").textContent = s.settings.privacy.save_history ? `Saved on this ${devLong()}` : "Not saved (memory only)";
   $("#paths-box").innerHTML = `<dt>Data folder</dt><dd>${esc(s.data_dir)}</dd><dt>Models</dt><dd>${esc(s.models_dir)}</dd>`;
   $("#diag-json").textContent = JSON.stringify({ network: s.network, route: s.route, stt: s.stt, tts: s.tts, local: s.local }, null, 2);
+}
+
+// ------------------------------------------------------------------ VoiceAssist cloud AI (shared, no keys)
+let cloudUsage = null;
+function renderCloudInfo() {
+  const box = $("#cloud-info"); if (!box || !S.state) return;
+  const c = S.state.cloud || {};
+  const u = cloudUsage;
+  box.innerHTML = `<dt>Status</dt><dd>${c.configured === false ? "✗ this copy isn't connected to the VoiceAssist cloud" : S.route?.route === "online" ? "✓ connected" : "offline — " + esc(S.route?.reason || "")}</dd>` +
+    `<dt>Questions left today</dt><dd>${u ? `${u.left} of ${u.limit}` : "—"}</dd>` +
+    `<dt>Resets</dt><dd>every day at midnight (UTC)</dd>`;
+}
+async function refreshCloudUsage() {
+  try { cloudUsage = await api("/api/cloud/usage"); } catch (e) { cloudUsage = null; toast("Couldn't check the cloud: " + e.message, 4000); }
+  renderCloudInfo();
 }
 
 function renderLocal(l) {
@@ -832,6 +819,7 @@ function closeSettings() { $("#drawer").classList.remove("open"); $("#drawer").s
 function selectTab(name) {
   $$("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   $$(".panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
+  if (name === "online") refreshCloudUsage();
 }
 
 async function runSelftest() {
@@ -871,7 +859,7 @@ function connectEvents() {
 }
 
 function offerSwitchBack() {
-  const p = S.settings?.online.provider; const name = { anthropic: "Claude", openai: "OpenAI", gemini: "Gemini" }[p] || "the cloud model";
+  const name = "the VoiceAssist cloud AI";
   banner("switchback", "info", `Internet is back. Switch to ${name} (cloud), or keep using the local model?`, {
     actions: [
       { label: `Switch to ${name}`, primary: true, onClick: () => api("/api/switch_back", { method: "POST", json: { accept: true } }).then(refreshState) },
@@ -1003,17 +991,15 @@ function authTab(name) {
   $$("[data-auth-tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.authTab === name || (name === "recover" && b.dataset.authTab === "login"))));
   const form = $(`[data-auth-panel="${name}"]`);
   form.querySelector(".auth-error").textContent = "";
+  $$(".auth-ok").forEach((x) => (x.textContent = ""));
   setTimeout(() => form.querySelector("input:not([type=checkbox])")?.focus(), 30);
 }
 
-function showAuth(hasAccounts) {
+function showAuth(hasAccounts, panel) {
   S.user = null;
   $("#app").hidden = true;
   $("#auth-view").hidden = false;
-  $("#signup-note").textContent = hasAccounts
-    ? `Your account is stored only on this ${devLong()}.`
-    : `Create the first account on this ${devLong()}. Conversations you've already had will be moved into it.`;
-  authTab(hasAccounts ? "login" : "signup");
+  authTab(panel || "login");
 }
 
 function signedOut() {
@@ -1049,31 +1035,19 @@ function passwordScore(pw) {
   return Math.max(1, Math.min(4, s));
 }
 
-function showRecoveryCode(code, username) {
-  return new Promise((resolve) => {
-    const d = $("#recovery-dialog");
-    $("#rc-code").textContent = code;
-    $("#rc-saved").checked = false; $("#rc-continue").disabled = true;
-    $("#rc-saved").onchange = () => ($("#rc-continue").disabled = !$("#rc-saved").checked);
-    $("#rc-copy").onclick = async () => { try { await navigator.clipboard.writeText(code); $("#rc-copy").textContent = "Copied ✓"; } catch (_) { $("#rc-copy").textContent = "Select & copy"; } };
-    $("#rc-download").onclick = () => {
-      const blob = new Blob([`VoiceAssist recovery code\r\nUsername: ${username}\r\nRecovery code: ${code}\r\n\r\nUse it on the sign-in page: Log in -> Forgot password?\r\n`], { type: "text/plain" });
-      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `VoiceAssist-recovery-${username}.txt`; a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    };
-    d.addEventListener("cancel", (e) => e.preventDefault(), { once: true }); // must confirm saving it
-    $("#rc-continue").onclick = () => { d.close(); $("#rc-copy").textContent = "Copy"; resolve(); };
-    d.showModal();
-  });
-}
 
-async function submitAuth(form, url, body, { needCode = false } = {}) {
+async function submitAuth(form, url, body) {
   const btn = form.querySelector("button[type=submit]");
   btn.disabled = true;
   try {
     const r = await api(url, { method: "POST", json: body });
-    if (r.recovery_code) await showRecoveryCode(r.recovery_code, r.user.username);
     form.reset();
+    if (r.needs_confirmation) {   // new account: Supabase sent a confirmation email
+      authTab("login");
+      $("#form-login").elements.email.value = body.email;
+      $("#form-login .auth-ok").textContent = `Almost done! We sent a confirmation link to ${body.email}. Open it, then log in here.`;
+      return;
+    }
     startApp(r.user, r.claimed_conversations);
   } catch (e) { formError(form, e); }
   finally { btn.disabled = false; }
@@ -1092,20 +1066,35 @@ function wireAuth() {
 
   $("#form-login").onsubmit = (e) => {
     e.preventDefault(); const f = e.target, d = formData(f);
-    if (!d.username.trim()) return formError(f, { message: "Enter your username.", field: "username" });
+    if (!d.email.trim()) return formError(f, { message: "Enter your email.", field: "email" });
     if (!d.password) return formError(f, { message: "Enter your password.", field: "password" });
-    submitAuth(f, "/api/auth/login", { username: d.username.trim(), password: d.password, remember: d.remember });
+    submitAuth(f, "/api/auth/login", { email: d.email.trim(), password: d.password, remember: d.remember });
   };
   $("#form-signup").onsubmit = (e) => {
     e.preventDefault(); const f = e.target, d = formData(f);
-    if (!d.username.trim()) return formError(f, { message: "Choose a username.", field: "username" });
+    if (!d.email.trim()) return formError(f, { message: "Enter your email.", field: "email" });
     if (d.password !== d.confirm) return formError(f, { message: "The two passwords don't match.", field: "confirm" });
-    submitAuth(f, "/api/auth/signup", { username: d.username.trim(), password: d.password, display_name: d.display_name, email: d.email, remember: d.remember });
+    submitAuth(f, "/api/auth/signup", { email: d.email.trim(), password: d.password, display_name: d.display_name, remember: d.remember });
   };
-  $("#form-recover").onsubmit = (e) => {
+  $("#form-recover").onsubmit = async (e) => {
+    e.preventDefault(); const f = e.target, d = formData(f), btn = f.querySelector("button[type=submit]");
+    btn.disabled = true;
+    try {
+      await api("/api/auth/recover", { method: "POST", json: { email: d.email.trim() } });
+      f.querySelector(".auth-error").textContent = "";
+      f.querySelector(".auth-ok").textContent = `If an account exists for ${d.email.trim()}, a reset link is on its way. Open it to choose a new password, then log in.`;
+    } catch (err) { formError(f, err); }
+    finally { btn.disabled = false; }
+  };
+  $("#form-newpw").onsubmit = async (e) => {
     e.preventDefault(); const f = e.target, d = formData(f);
     if (d.new_password !== d.confirm) return formError(f, { message: "The two passwords don't match.", field: "confirm" });
-    submitAuth(f, "/api/auth/recover", { username: d.username.trim(), code: d.code, new_password: d.new_password, remember: true });
+    const btn = f.querySelector("button[type=submit]"); btn.disabled = true;
+    try {
+      const r = await api("/api/auth/new_password", { method: "POST", json: { new_password: d.new_password } });
+      f.reset(); toast("Password changed — you're signed in"); startApp(r.user);
+    } catch (err) { formError(f, err, "new_password"); }
+    finally { btn.disabled = false; }
   };
 }
 
@@ -1167,11 +1156,12 @@ function renderUser() {
   const initials = (u.display_name || u.username).split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   $("#user-avatar").textContent = initials;
   $("#user-name").textContent = u.display_name;
-  $("#user-handle").textContent = "@" + u.username;
+  $("#user-handle").textContent = u.email || u.username;
   const fp = $("#form-profile");
   fp.elements.display_name.value = u.display_name; fp.elements.email.value = u.email || "";
   const fmt = (t) => (t ? new Date(t * 1000).toLocaleString() : "—");
-  $("#account-info").innerHTML = `<dt>Username</dt><dd>${esc(u.username)}</dd><dt>Created</dt><dd>${fmt(u.created)}</dd><dt>Last login</dt><dd>${fmt(u.last_login)}</dd><dt>Stored</dt><dd>only on this ${devLong()}</dd>`;
+  const fmtT = (t) => (!t ? "—" : typeof t === "number" ? fmt(t) : new Date(t).toLocaleString());
+  $("#account-info").innerHTML = `<dt>Email</dt><dd>${esc(u.email || u.username)}</dd><dt>Created</dt><dd>${fmtT(u.created)}</dd><dt>Last login</dt><dd>${fmtT(u.last_login)}</dd><dt>Account</dt><dd>VoiceAssist cloud — works on all your devices</dd>`;
 }
 
 async function logout() {
@@ -1196,19 +1186,14 @@ function wireAccount() {
 
   $("#form-profile").onsubmit = async (e) => {
     e.preventDefault(); const f = e.target, d = formData(f);
-    try { S.user = (await api("/api/account/profile", { method: "POST", json: { display_name: d.display_name, email: d.email } })).user; renderUser(); acctMsg(f, "Profile saved"); }
+    try { S.user = (await api("/api/account/profile", { method: "POST", json: { display_name: d.display_name } })).user; renderUser(); acctMsg(f, "Profile saved"); }
     catch (err) { formError(f, err); }
   };
   $("#form-password").onsubmit = async (e) => {
     e.preventDefault(); const f = e.target, d = formData(f);
     if (d.new_password !== d.confirm) return formError(f, { message: "The two new passwords don't match.", field: "confirm" });
-    try { await api("/api/account/password", { method: "POST", json: { current_password: d.current_password, new_password: d.new_password } }); f.reset(); acctMsg(f, "Password changed. Other signed-in windows were logged out."); }
+    try { await api("/api/account/password", { method: "POST", json: { current_password: d.current_password, new_password: d.new_password } }); f.reset(); acctMsg(f, "Password changed — use the new password on all your devices."); }
     catch (err) { formError(f, err, err.field === "password" ? "new_password" : undefined); }
-  };
-  $("#form-recovery").onsubmit = async (e) => {
-    e.preventDefault(); const f = e.target, d = formData(f);
-    try { const r = await api("/api/account/recovery", { method: "POST", json: { password: d.password } }); f.reset(); await showRecoveryCode(r.recovery_code, S.user.username); acctMsg(f, "New recovery code created — the old one no longer works."); }
-    catch (err) { formError(f, err, "password"); }
   };
   $("#form-delete").onsubmit = async (e) => {
     e.preventDefault(); const f = e.target, d = formData(f);
@@ -1275,5 +1260,10 @@ async function startApp(user, claimed) {
     return;
   }
   setPlatform(me.platform);
-  if (me.user) startApp(me.user); else showAuth(me.has_accounts);
+  if (me.recovery) { showAuth(true, "newpw"); return; }
+  if (me.user) startApp(me.user);
+  else {
+    showAuth(me.has_accounts);
+    if (me.recovery_error) $('[data-auth-panel="login"] .auth-error').textContent = me.recovery_error;
+  }
 })();

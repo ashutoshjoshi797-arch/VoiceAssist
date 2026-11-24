@@ -1,7 +1,7 @@
-"""Account system tests: hashing, sign-up/log-in rules, lockout, sessions, recovery, and the HTTP API
-(cookies, access control, per-account history isolation).
+"""Account tests: VoiceAssist cloud accounts (Supabase Auth, simulated by tests/fake_supabase.py) and the local
+HTTP API (session cookies, access control, per-account history isolation, offline sign-in).
 
-    python -m unittest tests.test_accounts -v      (no models or Ollama needed)
+    python -m unittest tests.test_accounts -v      (no models, Ollama or internet needed)
 """
 from __future__ import annotations
 
@@ -18,8 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["VOICEASSIST_HOME"] = tempfile.mkdtemp(prefix="va-acct-")
 
-from voiceassist import accounts as A  # noqa: E402
-from voiceassist.accounts import AccountError, AccountStore  # noqa: E402
+from tests.fake_supabase import ANON_KEY, FakeSupabase  # noqa: E402
+from voiceassist.accounts import AccountError  # noqa: E402
+from voiceassist.cloud import CloudAccounts  # noqa: E402
 from voiceassist.config import Settings  # noqa: E402
 from voiceassist.connectivity import ConnectionManager  # noqa: E402
 from voiceassist.engine import Engine, EventBus  # noqa: E402
@@ -29,105 +30,81 @@ from voiceassist.server import App, start_server  # noqa: E402
 PW = "correct-horse-7"
 
 
-class TestAccountStore(unittest.TestCase):
-    def setUp(self):
-        self.s = AccountStore(":memory:")
+def accounts_for(fake, name="s"):
+    return CloudAccounts(str(Path(os.environ["VOICEASSIST_HOME"]) / f"{name}-{time.time()}.json"),
+                         {"url": fake.url, "key": ANON_KEY, "site_url": "https://example.github.io/VoiceAssist/"})
 
-    def tearDown(self):
-        self.s._db.close()
 
-    def test_password_is_hashed_not_stored(self):
-        u, code = self.s.signup("mohit", PW, "Mohit")
-        row = self.s._db.execute("SELECT pw_hash, recovery_hash FROM users").fetchone()
-        self.assertTrue(row["pw_hash"].startswith("scrypt$"))
-        self.assertNotIn(PW, row["pw_hash"])
-        self.assertNotIn(code.replace("-", ""), row["recovery_hash"])
-        self.assertEqual(u["display_name"], "Mohit")
+class TestCloudAccounts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fake = FakeSupabase().start()
 
-    def test_signup_validation(self):
-        for bad_user in ["ab", "-bad", "has space", "x" * 40]:
+    @classmethod
+    def tearDownClass(cls):
+        cls.fake.stop()
+
+    def test_validation_happens_before_any_network_call(self):
+        s = accounts_for(self.fake)
+        n = len(self.fake.requests)
+        for email, pw, field in [("not-an-email", PW, "email"), ("a@b.co", "short1", "password"), ("a@b.co", "lettersonly", "password")]:
             with self.assertRaises(AccountError) as cm:
-                self.s.signup(bad_user, PW)
-            self.assertEqual(cm.exception.field, "username")
-        for bad_pw in ["short1", "lettersonly", "12345678"]:
+                s.signup(email, pw)
+            self.assertEqual(cm.exception.field, field)
+        self.assertEqual(len(self.fake.requests), n)
+
+    def test_signup_login_errors_and_session_survive_restart(self):
+        s = accounts_for(self.fake, "persist")
+        u, confirm = s.signup("Mohit@Example.com ", PW, "Mohit")
+        self.assertFalse(confirm)
+        self.assertEqual((u["email"], u["display_name"]), ("mohit@example.com", "Mohit"))
+        with self.assertRaises(AccountError) as cm:
+            s.signup("mohit@example.com", PW)
+        self.assertEqual((cm.exception.status, cm.exception.field), (409, "email"))
+        with self.assertRaises(AccountError) as cm:
+            s.login("mohit@example.com", "wrong-pass-1")
+        self.assertEqual((cm.exception.status, cm.exception.field), (401, "password"))
+        tok, max_age = s.create_session(u["id"], remember=True)
+        self.assertEqual(max_age, 30 * 24 * 3600)
+        # restart the app with the internet gone: still signed in (cached), so the offline AI is usable
+        again = CloudAccounts(str(s.path), {"url": "http://127.0.0.1:9", "key": ANON_KEY, "site_url": ""})
+        self.assertEqual(again.session_user(tok)["email"], "mohit@example.com")
+        self.assertIsNone(again.session_user("forged"))
+        with self.assertRaises(AccountError) as cm:   # but signing in a new account needs internet, with a clear message
+            again.login("x@y.co", PW)
+        self.assertIn("offline", str(cm.exception))
+        self.assertNotIn(PW, s.path.read_text(), "passwords are never stored")
+
+    def test_expired_access_token_is_refreshed(self):
+        s = accounts_for(self.fake)
+        u, _ = s.signup("refresh@example.com", PW)
+        s.db["users"][u["id"]]["expires_at"] = time.time() - 1
+        old = s.db["users"][u["id"]]["access"]
+        new = s.access_token(u["id"])
+        self.assertNotEqual(old, new)
+        self.assertEqual(s.usage(u["id"])["limit"], 50)
+
+    def test_email_confirmation_flow(self):
+        fake = FakeSupabase(confirm=True).start()
+        try:
+            s = accounts_for(fake)
+            self.assertEqual(s.signup("new@example.com", PW, "New"), (None, True))
             with self.assertRaises(AccountError) as cm:
-                self.s.signup("validuser", bad_pw)
-            self.assertEqual(cm.exception.field, "password")
+                s.login("new@example.com", PW)
+            self.assertIn("confirm", str(cm.exception))
+            fake.confirm_all()
+            self.assertEqual(s.login("new@example.com", PW)["display_name"], "New")
+        finally:
+            fake.stop()
+
+    def test_password_reset_email_and_not_configured(self):
+        s = accounts_for(self.fake)
+        s.request_password_reset("someone@example.com")
+        self.assertIn("someone@example.com", self.fake.recover_emails)
+        blank = CloudAccounts(str(Path(os.environ["VOICEASSIST_HOME"]) / "blank.json"), {"url": "", "key": "", "site_url": ""})
+        self.assertFalse(blank.configured)
         with self.assertRaises(AccountError):
-            self.s.signup("validuser", PW, email="not-an-email")
-
-    def test_username_unique_case_insensitive(self):
-        self.s.signup("Mohit", PW)
-        with self.assertRaises(AccountError) as cm:
-            self.s.signup("mohit", PW)
-        self.assertEqual(cm.exception.status, 409)
-
-    def test_login_and_generic_errors(self):
-        self.s.signup("mohit", PW)
-        self.assertEqual(self.s.login("MOHIT", PW)["username"], "mohit")
-        with self.assertRaises(AccountError) as wrong_pw:
-            self.s.login("mohit", "wrong-pass-1")
-        with self.assertRaises(AccountError) as no_user:
-            self.s.login("nobody", "wrong-pass-1")
-        self.assertEqual(str(wrong_pw.exception), str(no_user.exception))  # doesn't reveal which usernames exist
-
-    def test_lockout_after_repeated_failures(self):
-        self.s.signup("mohit", PW)
-        for _ in range(A.MAX_FAILS - 1):
-            with self.assertRaises(AccountError):
-                self.s.login("mohit", "wrong-pass-1")
-        with self.assertRaises(AccountError) as cm:
-            self.s.login("mohit", "wrong-pass-1")
-        self.assertEqual(cm.exception.status, 429)
-        with self.assertRaises(AccountError) as cm:
-            self.s.login("mohit", PW)  # even the right password waits out the lock
-        self.assertEqual(cm.exception.status, 429)
-        self.s._db.execute("UPDATE users SET locked_until=0")
-        self.assertTrue(self.s.login("mohit", PW))
-
-    def test_sessions_expire_and_end(self):
-        u, _ = self.s.signup("mohit", PW)
-        tok, max_age = self.s.create_session(u["id"], remember=True)
-        self.assertEqual(max_age, A.SESSION_REMEMBER_S)
-        self.assertEqual(self.s.session_user(tok)["id"], u["id"])
-        self.assertIsNone(self.s.session_user("forged-token"))
-        tok2, max_age2 = self.s.create_session(u["id"], remember=False)
-        self.assertIsNone(max_age2)  # browser-session cookie
-        self.s._db.execute("UPDATE sessions SET expires=?", (time.time() - 1,))
-        self.assertIsNone(self.s.session_user(tok2))
-        tok3, _ = self.s.create_session(u["id"], True)
-        self.s.end_session(tok3)
-        self.assertIsNone(self.s.session_user(tok3))
-
-    def test_recovery_code_resets_password_once(self):
-        self.s.signup("mohit", PW)
-        code = self.s.signup("other", PW)[1]
-        u, code = self.s.signup("third", PW)
-        user, new_code = self.s.reset_with_recovery("third", code.lower(), "brand-new-pass9")
-        self.assertNotEqual(code, new_code)
-        self.assertTrue(self.s.login("third", "brand-new-pass9"))
-        with self.assertRaises(AccountError):
-            self.s.reset_with_recovery("third", code, "another-pass-9")  # old code no longer works
-        with self.assertRaises(AccountError):
-            self.s.reset_with_recovery("third", "AAAA-BBBB-CCCC-DDDD-EEEE", "another-pass-9")
-
-    def test_change_password_signs_out_other_sessions(self):
-        u, _ = self.s.signup("mohit", PW)
-        keep, _ = self.s.create_session(u["id"], True)
-        other, _ = self.s.create_session(u["id"], True)
-        with self.assertRaises(AccountError):
-            self.s.change_password(u["id"], "wrong-pass-1", "new-pass-word-2")
-        self.s.change_password(u["id"], PW, "new-pass-word-2", keep_token=keep)
-        self.assertIsNotNone(self.s.session_user(keep))
-        self.assertIsNone(self.s.session_user(other))
-        self.assertTrue(self.s.login("mohit", "new-pass-word-2"))
-
-    def test_delete_requires_password(self):
-        u, _ = self.s.signup("mohit", PW)
-        with self.assertRaises(AccountError):
-            self.s.delete(u["id"], "wrong-pass-1")
-        self.s.delete(u["id"], PW)
-        self.assertEqual(self.s.count(), 0)
+            blank.login("a@b.co", PW)
 
 
 class Client:
@@ -160,66 +137,86 @@ class Client:
             return r.status, raw
 
 
+
 class TestAccountAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.fake = FakeSupabase().start()
         s = Settings(Path(os.environ["VOICEASSIST_HOME"]) / "settings.json")
-        s.update({"strict_offline": True, "local": {"preload": False}})
+        s.update({"local": {"preload": False}})
         hist = HistoryStore(None)
         cls.hist = hist
-        cls.legacy = hist.create()  # a conversation from before accounts existed
+        cls.legacy = hist.create()  # a conversation from before cloud accounts existed
         hist.add(cls.legacy, "user", "old question")
         engine = Engine(s, ConnectionManager(s), hist, EventBus())
-        cls.app = App(s, engine.conn, hist, engine, engine.bus, accounts=AccountStore(":memory:"))
+        cls.app = App(s, engine.conn, hist, engine, engine.bus, accounts=accounts_for(cls.fake, "api"))
         cls.srv = start_server(cls.app, 0)
 
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.fake.stop()
 
     def test_full_account_flow(self):
         a, b = Client(self.app), Client(self.app)
-        # not logged in: app API is closed, sign-in endpoints open
+        # not logged in: app API is closed, sign-in endpoints open; no AI key settings exist any more
         self.assertEqual(a.call("GET", "/api/conversations")[0], 401)
-        st, me = a.call("GET", "/api/auth/me")
-        self.assertEqual((st, me["user"], me["has_accounts"]), (200, None, False))
-        # first sign-up claims the old conversations, sets a secure session cookie
-        st, r = a.call("POST", "/api/auth/signup", {"username": "mohit", "password": PW, "display_name": "Mohit"})
+        self.assertEqual(a.call("GET", "/api/auth/me")[1]["user"], None)
+        # first cloud account on this computer gets the old conversations, and a secure session cookie
+        st, r = a.call("POST", "/api/auth/signup", {"email": "mohit@example.com", "password": PW, "display_name": "Mohit"})
         self.assertEqual(st, 201)
-        self.assertRegex(r["recovery_code"], r"^[A-Z0-9]{4}(-[A-Z0-9]{4}){4}$")
         self.assertEqual(r["claimed_conversations"], 1)
+        uid = r["user"]["id"]
         for flag in ("HttpOnly", "SameSite=Strict", "Path=/"):
             self.assertIn(flag, a.last_set_cookie)
-        st, convs = a.call("GET", "/api/conversations")
-        self.assertEqual([c["id"] for c in convs["conversations"]], [self.legacy])
+        self.assertEqual([c["id"] for c in a.call("GET", "/api/conversations")[1]["conversations"]], [self.legacy])
+        st, state = a.call("GET", "/api/state")
+        self.assertTrue(state["cloud"]["configured"])
+        self.assertNotIn("keys", state)
+        self.assertEqual(a.call("POST", "/api/keys", {"provider": "anthropic", "key": "x"})[0], 404)   # no AI keys any more
+        self.assertEqual(a.call("GET", "/api/cloud/usage")[1]["left"], 50)
         # second user: separate history, cannot read or delete the first user's conversation
-        st, r2 = b.call("POST", "/api/auth/signup", {"username": "guest", "password": PW})
+        st, r2 = b.call("POST", "/api/auth/signup", {"email": "guest@example.com", "password": PW})
         self.assertEqual(r2["claimed_conversations"], 0)
         self.assertEqual(b.call("GET", "/api/conversations")[1]["conversations"], [])
         self.assertEqual(b.call("GET", f"/api/conversations/{self.legacy}")[0], 404)
         self.assertEqual(b.call("DELETE", f"/api/conversations/{self.legacy}")[0], 404)
         b.call("POST", "/api/history/clear")
         self.assertTrue(self.hist.exists(self.legacy), "clearing guest history must not touch mohit's")
-        # typed turn by guest goes into guest's own conversation even if it names mohit's conversation
         st, _ = b.call("POST", "/api/turn", {"text": "hello", "conversation_id": self.legacy})
         self.assertEqual(len(self.hist.messages(self.legacy)), 1, "guest's message must not land in mohit's conversation")
         # logout closes the API again; login works; wrong password is rejected
         self.assertEqual(a.call("POST", "/api/auth/logout")[0], 200)
         self.assertEqual(a.call("GET", "/api/state")[0], 401)
-        self.assertEqual(a.call("POST", "/api/auth/login", {"username": "mohit", "password": "wrong-pass-1"})[0], 401)
-        st, r = a.call("POST", "/api/auth/login", {"username": "mohit", "password": PW})
-        self.assertEqual((st, r["user"]["username"]), (200, "mohit"))
-        self.assertEqual(a.call("GET", "/api/state")[1]["user"]["username"], "mohit")
-        # profile + password change
+        st, r = a.call("POST", "/api/auth/login", {"email": "mohit@example.com", "password": "wrong-pass-1"})
+        self.assertEqual((st, r["field"]), (401, "password"))
+        st, r = a.call("POST", "/api/auth/login", {"email": "mohit@example.com", "password": PW})
+        self.assertEqual((st, r["user"]["email"]), (200, "mohit@example.com"))
+        # profile + password change (checks the current password with the cloud)
         st, r = a.call("POST", "/api/account/profile", {"display_name": "Mohit S"})
         self.assertEqual(r["user"]["display_name"], "Mohit S")
-        st, r = a.call("POST", "/api/account/password", {"current_password": "nope-nope-1", "new_password": "x"})
+        st, r = a.call("POST", "/api/account/password", {"current_password": "nope-nope-1", "new_password": "new-pass-22"})
         self.assertEqual((st, r["field"]), (401, "current_password"))
-        # delete guest account (needs password) -> its history is gone, session ends
+        self.assertEqual(a.call("POST", "/api/account/password", {"current_password": PW, "new_password": "new-pass-22"})[0], 200)
+        # forgot password: the cloud emails a reset link
+        self.assertEqual(a.call("POST", "/api/auth/recover", {"email": "mohit@example.com"})[0], 200)
+        # delete guest account (needs password) -> account gone from the cloud, history gone, session ends
         self.assertEqual(b.call("POST", "/api/account/delete", {"password": "wrong-pass-1"})[0], 401)
         self.assertEqual(b.call("POST", "/api/account/delete", {"password": PW})[0], 200)
         self.assertEqual(b.call("GET", "/api/state")[0], 401)
-        self.assertEqual(self.hist.list(user_id=2), [])
+        self.assertNotIn("guest@example.com", self.fake.users)
+        self.assertIn(uid, [u["id"] for u in self.fake.users.values()])
+
+    def test_needs_confirmation_is_reported(self):
+        fake = FakeSupabase(confirm=True).start()
+        try:
+            old = self.app.accounts
+            self.app.accounts = accounts_for(fake)
+            st, r = Client(self.app).call("POST", "/api/auth/signup", {"email": "c@example.com", "password": PW})
+            self.assertEqual((st, r.get("needs_confirmation")), (202, True))
+        finally:
+            self.app.accounts = old
+            fake.stop()
 
     def test_token_still_required(self):
         c = Client(self.app)

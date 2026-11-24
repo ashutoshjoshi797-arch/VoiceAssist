@@ -234,6 +234,8 @@ input[type=range] { accent-color: var(--accent); padding: 0; }
 .auth-form .field input { padding: 10px 12px; }
 .auth-form .field input.invalid { border-color: var(--bad); }
 .auth-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; }
+.auth-ok { color: #4ade80; font-size: 13px; min-height: 0; }
+.auth-ok:empty { display: none; }
 .auth-error { color: #fca5a5; font-size: 13px; min-height: 0; }
 .auth-error:empty { display: none; }
 .auth-switch { text-align: center; margin: 2px 0 0; }

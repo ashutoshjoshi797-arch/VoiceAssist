@@ -6,11 +6,10 @@ import org.json.JSONObject
 class VoiceAssistCore(val platform: Platform) {
     val paths = StorePaths(platform.dataDir)
     val settings = Settings(paths.settings)
-    val secrets: SecretStore get() = platform.secrets
     val bus = EventBus()
-    val accounts = AccountStore(paths.accounts)
+    val accounts = CloudAccounts(paths.cloudSession, platform.cloud)
     val history = HistoryStore(if (settings.bool("privacy.save_history", true)) paths.history else null)
-    val conn = ConnectionManager(settings, platform.network) { p -> secrets.get(p) }
+    val conn = ConnectionManager(settings, platform.network, platform.cloud.target) { accounts.configured }
     val engine = Engine(this)
     val setup = LocalAISetup(this)
     val token: String = java.util.UUID.randomUUID().toString().replace("-", "")
@@ -36,7 +35,7 @@ class VoiceAssistCore(val platform: Platform) {
         conn.onChange { kind, snap ->
             val (route, reason) = conn.route()
             bus.publish(JSONObject(snap.toString()).put("type", "network").put("kind", kind).put("route", route).put("route_reason", reason))
-            if (kind == "switch_back_offer") bus.publish(jsonOf("type" to "switch_back_offer", "provider" to settings.str("online.provider")), sticky = false)
+            if (kind == "switch_back_offer") bus.publish(jsonOf("type" to "switch_back_offer", "provider" to "voiceassist"), sticky = false)
             if (snap.getString("state") != ConnectionManager.ONLINE) engine.networkAbort?.cancel()
         }
         settings.onChange { changed, _ ->

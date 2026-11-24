@@ -4,7 +4,7 @@
 
 Needs the speech models (python -m voiceassist.setup_models) and Ollama running with at least
 one model (set VOICEASSIST_TEST_LOCAL_MODEL, default: the first installed model). Tests that
-need Ollama are skipped if it isn't running. Cloud providers are simulated by tests/fake_cloud.py.
+need Ollama are skipped if it isn't running. The VoiceAssist cloud is simulated by tests/fake_cloud.py.
 """
 from __future__ import annotations
 
@@ -33,17 +33,17 @@ for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API
     os.environ.pop(var, None)
 
 from tests.fake_cloud import FakeCloud  # noqa: E402
-from voiceassist import audio, netutil, secrets_store  # noqa: E402
+from voiceassist import audio, netutil  # noqa: E402
+from voiceassist.cloud import CloudAccounts, VoiceAssistCloudProvider  # noqa: E402
 from voiceassist.config import Settings  # noqa: E402
 from voiceassist.connectivity import AIRPLANE, OFFLINE, ONLINE, ConnectionManager  # noqa: E402
 from voiceassist.engine import Engine, EventBus  # noqa: E402
 from voiceassist.history import HistoryStore, build_context  # noqa: E402
-from voiceassist.llm import AnthropicProvider, GeminiProvider, OpenAIProvider, build_local  # noqa: E402
+from voiceassist.llm import build_local  # noqa: E402
 from voiceassist.llm.base import strip_think  # noqa: E402
 from voiceassist.llm.cloud import merge_roles  # noqa: E402
 from voiceassist.tts import SentenceChunker, speakable  # noqa: E402
 
-secrets_store.keyring = None  # never touch the developer's real credential store from tests
 
 
 def ollama_models() -> list[str]:
@@ -60,8 +60,16 @@ LOCAL_MODEL = os.environ.get("VOICEASSIST_TEST_LOCAL_MODEL") or (LOCAL_MODELS[0]
 need_ollama = unittest.skipUnless(LOCAL_MODEL, "Ollama with a model is required")
 
 
-def run_turn(engine, conv=None, text=None, wav=None, timeout=120):
-    t = engine.start_turn(conv, wav=wav, text=text)
+def cloud_accounts(base_url: str) -> CloudAccounts:
+    """A signed-in VoiceAssist cloud account (user "u1") pointing at the fake cloud."""
+    acc = CloudAccounts(str(Path(_TMP) / f"cloud-{time.time()}.json"), {"url": base_url, "key": "test-anon", "site_url": ""})
+    acc.db["users"]["u1"] = {"access": "tok-u1", "refresh": "ref-u1", "expires_at": time.time() + 3600,
+                             "user": {"id": "u1", "email": "t@example.com", "username": "t@example.com", "display_name": "T"}}
+    return acc
+
+
+def run_turn(engine, conv=None, text=None, wav=None, timeout=120, user_id="u1"):
+    t = engine.start_turn(conv, wav=wav, text=text, user_id=user_id)
     evs = []
     deadline = time.time() + timeout
     for ev in t.iter_events():
@@ -179,7 +187,6 @@ class TestConnectivity(unittest.TestCase):
     def setUp(self):
         self.fake = FakeCloud().start()
         os.environ["VOICEASSIST_PROBE_HOSTS"] = f"127.0.0.1:{self.fake.port}"
-        os.environ["ANTHROPIC_API_KEY"] = "test-key"
         self.s = Settings(Path(_TMP) / f"c-{time.time()}.json")
         self.c = ConnectionManager(self.s)
         self.events = []
@@ -188,7 +195,6 @@ class TestConnectivity(unittest.TestCase):
     def tearDown(self):
         self.fake.stop()
         os.environ.pop("VOICEASSIST_PROBE_HOSTS", None)
-        os.environ.pop("ANTHROPIC_API_KEY", None)
         os.environ.pop("VOICEASSIST_RFKILL_DIR", None)
 
     def test_online_offline_offer_switch_back(self):
@@ -236,8 +242,8 @@ class TestConnectivity(unittest.TestCase):
         self.s.update({"mode": "local"})
         self.assertEqual(self.c.route()[0], "local")
         self.s.update({"mode": "auto"})
-        os.environ.pop("ANTHROPIC_API_KEY")
-        self.assertEqual(self.c.route(), ("local", "No API key for the selected cloud provider"))
+        self.c.cloud_ready = lambda: False
+        self.assertEqual(self.c.route(), ("local", "This copy isn't connected to the VoiceAssist cloud"))
 
     def test_strict_offline_never_probes(self):
         self.s.update({"strict_offline": True})
@@ -248,51 +254,39 @@ class TestConnectivity(unittest.TestCase):
         self.assertEqual(len(self.fake.requests), before)
 
 
-# =========================================================================== providers (wire formats)
-class TestCloudProviders(unittest.TestCase):
+# =========================================================================== the VoiceAssist cloud AI (wire format)
+class TestCloudProvider(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fake = FakeCloud().start()
-        base = f"http://127.0.0.1:{cls.fake.port}"
-        os.environ["VOICEASSIST_ANTHROPIC_BASE"] = base
-        os.environ["VOICEASSIST_OPENAI_BASE"] = base + "/v1"
-        os.environ["VOICEASSIST_GEMINI_BASE"] = base
+        cls.acc = cloud_accounts(f"http://127.0.0.1:{cls.fake.port}")
 
     @classmethod
     def tearDownClass(cls):
         cls.fake.stop()
 
-    def _run(self, p):
-        return "".join(p.stream_chat("sys", [{"role": "user", "content": "hi"}], threading.Event()))
-
-    def test_anthropic_stream_and_headers(self):
-        out = self._run(AnthropicProvider("claude-sonnet-5-5", "k-ant"))
+    def test_stream_headers_and_no_ai_key(self):
+        p = VoiceAssistCloudProvider(self.acc, "u1", max_tokens=300)
+        out = "".join(p.stream_chat("sys", [{"role": "user", "content": "hi"}], threading.Event()))
         self.assertEqual(out, "This is the cloud model answering. It works fine.")
         req = self.fake.requests[-1]
-        self.assertEqual(req["headers"]["x-api-key"], "k-ant")
-        self.assertEqual(req["body"]["model"], "claude-sonnet-5-5")
-        self.assertTrue(req["body"]["stream"])
+        self.assertEqual(req["path"], "/functions/v1/chat")
+        self.assertEqual(req["headers"]["authorization"], "Bearer tok-u1")   # the user's sign-in, not an AI key
+        self.assertEqual(req["headers"]["apikey"], "test-anon")
+        self.assertEqual(req["body"]["max_tokens"], 300)
+        self.assertEqual(req["body"]["messages"][-1], {"role": "user", "content": "hi"})
 
-    def test_openai_stream(self):
-        self.assertIn("cloud model", self._run(OpenAIProvider("gpt-5.5", "k-oai")))
-        self.assertEqual(self.fake.requests[-1]["headers"]["authorization"], "Bearer k-oai")
-
-    def test_gemini_stream(self):
-        self.assertIn("cloud model", self._run(GeminiProvider("gemini-3.8-flash", "k-gem")))
-        req = self.fake.requests[-1]
-        self.assertIn(":streamGenerateContent", req["path"])
-        self.assertEqual(req["headers"]["x-goog-api-key"], "k-gem")
-        self.assertNotIn("temperature", str(req["body"]))
-
+    def test_not_signed_in(self):
+        from voiceassist.llm import AuthError
+        with self.assertRaises(AuthError):
+            list(VoiceAssistCloudProvider(self.acc, None).stream_chat("s", [{"role": "user", "content": "x"}], threading.Event()))
 
 # =========================================================================== engine end-to-end
 @need_ollama
 class TestEngine(unittest.TestCase):
     def setUp(self):
         self.fake = FakeCloud().start()
-        os.environ["VOICEASSIST_ANTHROPIC_BASE"] = f"http://127.0.0.1:{self.fake.port}"
         os.environ["VOICEASSIST_PROBE_HOSTS"] = f"127.0.0.1:{self.fake.port}"
-        os.environ["ANTHROPIC_API_KEY"] = "test-key"
         self.s = Settings(Path(_TMP) / f"e-{time.time()}.json")
         self.s.update({"local": {"model": LOCAL_MODEL, "preload": False}})
         self.bus = EventBus()
@@ -300,11 +294,11 @@ class TestEngine(unittest.TestCase):
         self.conn.check_now()
         self.hist = HistoryStore(None)
         self.eng = Engine(self.s, self.conn, self.hist, self.bus)
+        self.eng.cloud_accounts = cloud_accounts(f"http://127.0.0.1:{self.fake.port}")
 
     def tearDown(self):
         self.fake.stop()
-        for v in ("VOICEASSIST_PROBE_HOSTS", "ANTHROPIC_API_KEY"):
-            os.environ.pop(v, None)
+        os.environ.pop("VOICEASSIST_PROBE_HOSTS", None)
 
     def test_online_answer_uses_cloud(self):
         evs, t = run_turn(self.eng, text="Hello there")
@@ -329,7 +323,7 @@ class TestEngine(unittest.TestCase):
 
     def test_stalled_stream_aborts_when_network_detected_down(self):
         self.fake.mode = "hang"
-        t = self.eng.start_turn(None, text="Tell me about Paris.")
+        t = self.eng.start_turn(None, text="Tell me about Paris.", user_id="u1")
         evs, t0 = [], time.time()
         for ev in t.iter_events():
             evs.append(ev)
@@ -345,7 +339,7 @@ class TestEngine(unittest.TestCase):
         self.fake.mode = "401"
         evs, _ = run_turn(self.eng, text="Say hello.")
         fo = next(e for e in evs if e["type"] == "failover")
-        self.assertIn("API key", fo["message"])
+        self.assertIn("sign-in", fo["message"])
         self.assertEqual(kinds(evs)[-1], "done")
 
     def test_history_preserved_across_switching(self):
@@ -406,7 +400,7 @@ class TestEngine(unittest.TestCase):
         evs, _ = run_turn(self.eng, text="hi")
         err = next(e for e in evs if e["type"] == "error")
         self.assertIn("not installed", err["message"])
-        self.assertIn("ollama pull does-not-exist:1b", err["hint"])
+        self.assertIn("Set up offline AI", err["hint"])
 
     def test_local_engine_not_running(self):
         self.fake.stop()
@@ -421,7 +415,7 @@ class TestEngine(unittest.TestCase):
         evs, _ = run_turn(self.eng, wav=audio.float32_to_wav([0.1] * 16000, 16000))
         err = next(e for e in evs if e["type"] == "error")
         self.assertIn("not installed", err["message"])
-        self.assertIn("setup_models --stt whisper-small", err["hint"])
+        self.assertIn("Set up offline AI", err["hint"])
 
     def test_missing_voice_falls_back_or_reports(self):
         self.s.update({"tts": {"voice": "xx_XX-nobody-low"}})

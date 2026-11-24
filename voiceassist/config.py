@@ -1,6 +1,6 @@
 """Settings: defaults + user overrides persisted to settings.json.
 
-API keys are NEVER stored here — see secrets_store.py.
+There are no AI keys in the app: online answers come from the VoiceAssist cloud (see cloud.py).
 """
 from __future__ import annotations
 
@@ -24,32 +24,16 @@ DEFAULT_SYSTEM_PROMPT = (
 
 DEFAULTS: dict[str, Any] = {
     # auto  = use the online provider when the internet is reachable, otherwise the local model
-    # local = never use cloud services (everything stays on this computer)
+    # local = never use the cloud AI (everything stays on this computer)
     "mode": "auto",
     # When the internet comes back after a fallback, switch back automatically instead of asking.
     "auto_switch_back": False,
     # Strict offline: never open any non-loopback network connection (not even connectivity probes).
     "strict_offline": False,
     "online": {
-        "provider": "anthropic",  # anthropic | openai | gemini
-        "models": {
-            "anthropic": "claude-sonnet-5-5",
-            "openai": "gpt-5.5",
-            "gemini": "gemini-3.8-flash",
-        },
-        "model_choices": {
-            "anthropic": ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
-            "openai": ["gpt-5.5", "gpt-5.6-sol", "chat-latest"],
-            "gemini": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"],
-        },
+        # answers from the VoiceAssist cloud AI (one shared service, no key needed by users)
         "max_output_tokens": 1024,
         "request_timeout_s": 30,
-        # Cloud speech is opt-in. Default: speech is always processed locally, even when online.
-        "cloud_stt": False,
-        "cloud_tts": False,
-        "openai_stt_model": "gpt-transcribe",
-        "openai_tts_model": "gpt-4o-mini-tts",
-        "openai_tts_voice": "alloy",
     },
     "local": {
         "engine": "ollama",  # ollama | openai_compat (llama.cpp server, LM Studio, ...)
@@ -196,7 +180,6 @@ class Settings:
 
 _ALLOWED_ENUMS = {
     "mode": {"auto", "local"},
-    ("online", "provider"): {"anthropic", "openai", "gemini"},
     ("local", "engine"): {"ollama", "openai_compat"},
     ("tts", "engine"): {"piper", "system", "none"},
     ("ui", "conversation_style"): {"handsfree", "ptt"},

@@ -78,7 +78,7 @@ class Settings(private val file: File) {
           "tts": {"engine": "piper", "voice": "en_US-amy-low", "speaker_id": 0, "speed": 1.0, "threads": 0, "provider": "cpu", "system_voice": ""},
           "assistant": {"system_prompt": "", "max_context_chars_online": 48000, "max_context_chars_local": 5000},
           "privacy": {"save_history": true, "save_recordings": false},
-          "ui": {"conversation_style": "handsfree", "mic_device": "", "speaker_device": "", "vad_sensitivity": 0.5,
+          "ui": {"conversation_style": "handsfree", "review_voice": true, "mic_device": "", "speaker_device": "", "vad_sensitivity": 0.5,
                  "silence_ms": 800, "barge_in": true, "theme": "dark", "voice_panel_open": true}
         }""").also { it.getJSONObject("assistant").put("system_prompt", SYSTEM_PROMPT) }
     }

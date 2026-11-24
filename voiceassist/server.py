@@ -25,6 +25,7 @@ from . import __version__, models_catalog, paths, secrets_store
 from .accounts import AccountError, AccountStore
 from .llm import RECOMMENDED_MODELS, LLMError, build_local
 from .setup_wizard import LocalAISetup, SetupError
+from .stt import STTError
 
 log = logging.getLogger(__name__)
 
@@ -329,6 +330,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             turn.cancel.set()  # the window went away: stop working on it
 
+    def api_transcribe(self, q):
+        try:
+            self._json(self.app.engine.transcribe_only(self._body()))
+        except STTError as e:
+            self._err(400, str(e), getattr(e, "hint", ""))
+        except Exception as e:
+            self._err(400, f"Could not read the recorded audio: {e}")
+
     def api_cancel(self, q):
         body = self._json_body()
         self._json({"cancelled": self.app.engine.cancel(body.get("turn_id"))})
@@ -449,6 +458,7 @@ ROUTES_EXACT = {
     ("POST", "/api/account/delete"): Handler.api_account_delete,
     ("GET", "/api/events"): Handler.api_events,
     ("POST", "/api/turn"): Handler.api_turn,
+    ("POST", "/api/transcribe"): Handler.api_transcribe,
     ("POST", "/api/cancel"): Handler.api_cancel,
     ("GET", "/api/settings"): Handler.api_settings_get,
     ("POST", "/api/settings"): Handler.api_settings_post,

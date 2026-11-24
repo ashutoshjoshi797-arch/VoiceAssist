@@ -29,7 +29,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
     ap.add_argument("--wav", required=True)
-    ap.add_argument("--scenario", default="basic", choices=["basic", "bargein", "ptt", "mute", "denied", "nomic"])
+    ap.add_argument("--scenario", default="basic", choices=["basic", "review", "bargein", "ptt", "mute", "denied", "nomic"])
     ap.add_argument("--expect-network", default=None)
     ap.add_argument("--expect-heard", default="")
     ap.add_argument("--expect-answer", default="")
@@ -59,6 +59,9 @@ def main() -> int:
         page.on("pageerror", lambda e: logs.append(f"PAGEERROR: {e}"))
         page.goto(a.url)
         ensure_signed_in(page)
+        page.wait_for_function("S.settings && S.settings.ui", timeout=15000)
+        if a.scenario != "review":   # the other scenarios test the send-straight-away voice flow
+            page.evaluate("saveSettings({ui: {review_voice: false}})")
         page.wait_for_function("document.querySelector('#net-label').textContent !== 'CHECKING'", timeout=15000)
         net = page.inner_text("#net-label")
         if a.expect_network:
@@ -124,6 +127,22 @@ def main() -> int:
         page.wait_for_function("document.querySelector('#btn-mic').classList.contains('listening') || document.querySelector('#btn-mic').classList.contains('hearing')", timeout=10000)
         check("microphone started (hands-free)", True, page.inner_text("#mic-state"))
 
+        if a.scenario == "review":
+            page.wait_for_function("!document.querySelector('#review-hint').hidden", timeout=a.timeout * 1000)
+            box = page.input_value("#text-in")
+            n = page.evaluate("document.querySelectorAll('.msg-row.user').length")
+            check("check before sending: words wait in the message box, nothing sent", n == 0 and any(x in box.lower() for x in a.expect_heard.lower().split("|")), f"box {box!r}")
+            check("listening paused while checking", not page.evaluate("S.session"))
+            time.sleep(3)
+            check("still not sent after waiting", page.evaluate("document.querySelectorAll('.msg-row.user').length") == 0)
+            page.fill("#text-in", box + " Answer in one sentence.")
+            page.press("#text-in", "Enter")
+            page.wait_for_function("[...document.querySelectorAll('.msg-row.assistant .bubble')].some(b => b.textContent.length > 3 && !b.classList.contains('cursor'))", timeout=a.timeout * 1000)
+            sent = page.inner_text(".msg-row.user .bubble")
+            answer = page.inner_text(".msg-row.assistant .bubble")
+            check("the checked (edited) message is what was sent", "one sentence" in sent.lower(), sent)
+            check("AI answered", a.expect_answer.lower() in answer.lower(), f"answer {answer!r}")
+            check("hint hidden after sending", page.is_hidden("#review-hint"))
         if a.scenario == "basic":
             page.wait_for_function("[...document.querySelectorAll('.msg-row.assistant .meta')].some(m => /voice in/.test(m.textContent))", timeout=a.timeout * 1000)
             heard = page.inner_text(".msg-row.user .bubble")

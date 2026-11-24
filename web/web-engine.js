@@ -11,7 +11,7 @@
 "use strict";
 (function () {
   const PLATFORM = "web";
-  const VERSION = "1.1.0";
+  const VERSION = "1.1.1";
   const LS = "va_web_";
   const nativeFetch = window.fetch.bind(window);
 
@@ -52,7 +52,7 @@
     tts: { engine: "browser", voice: "", speed: 1.0, speaker_id: 0 },
     assistant: { system_prompt: SYSTEM_PROMPT, max_context_chars_online: 48000 },
     privacy: { save_history: true, save_recordings: false },
-    ui: { conversation_style: "handsfree", mic_device: "", speaker_device: "", vad_sensitivity: 0.5, silence_ms: 800, barge_in: true, theme: "dark", voice_panel_open: false },
+    ui: { conversation_style: "handsfree", review_voice: true, mic_device: "", speaker_device: "", vad_sensitivity: 0.5, silence_ms: 800, barge_in: true, theme: "dark", voice_panel_open: false },
   };
   const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
   function merge(base, over) {
@@ -505,7 +505,8 @@
     const user = await accounts.sessionUser();
     currentUserId = user?.id ?? null;
     if (!user && !PUBLIC.has(p)) return json({ error: "Please log in.", auth: "required" }, 401);
-    const b = method === "POST" && !(p === "/api/turn" && !(init?.headers?.["Content-Type"] || "").startsWith("application/json")) ? await bodyJson(init) : {};
+    const isAudio = (p === "/api/turn" || p === "/api/transcribe") && !(init?.headers?.["Content-Type"] || "").startsWith("application/json");
+    const b = method === "POST" && !isAudio ? await bodyJson(init) : {};
     switch (`${method} ${p}`) {
       case "GET /api/version": return json({ version: VERSION });
       case "POST /api/ping": case "POST /api/bye": case "POST /api/quit": return json({ ok: true });
@@ -567,6 +568,11 @@
       case "POST /api/local/preload": return json({ ok: true });
       case "GET /api/voices": return json({ piper: [], system: [], catalog: {} });
       case "POST /api/selftest": throw new HttpError(400, "The offline self-test is only in the installed apps.");
+      case "POST /api/transcribe": {
+        if (!navigator.onLine) throw new HttpError(503, "You're offline.", { hint: "Reconnect to the internet to keep talking." });
+        const r = await transcribe(user.id, await new Response(init.body).arrayBuffer(), new AbortController().signal);
+        return json({ text: r.text, engine: r.engine });
+      }
       case "POST /api/turn": {
         const ctype = (init?.headers?.["Content-Type"] || "").split(";")[0];
         const conv = url.searchParams.get("conversation_id");

@@ -288,6 +288,14 @@ class Engine:
         self.bus.publish(self.local_status)
 
     # ------------------------------------------------------------------ turns
+    def transcribe_only(self, wav: bytes) -> dict:
+        """Speech -> text without answering: the window shows the words so the user can check them first."""
+        samples, sr = audio.wav_to_float32(wav)
+        if self.settings.get("privacy.save_recordings", False):
+            (paths.recordings_dir() / time.strftime("rec-%Y%m%d-%H%M%S.wav")).write_bytes(wav)
+        r = self.stt.transcribe(samples, sr)
+        return {"text": (r.get("text") or "").strip(), "engine": r.get("engine", ""), "seconds": r.get("seconds")}
+
     def start_turn(self, conv_id: str | None, wav: bytes | None = None, text: str | None = None,
                    user_id: int | None = None) -> Turn:
         with self._lock:

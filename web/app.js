@@ -16,7 +16,14 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 async function api(path, { method = "GET", json, body, headers = {}, raw = false, signal } = {}) {
   const h = { "X-App-Token": TOKEN, ...headers };
   if (json !== undefined) { h["Content-Type"] = "application/json"; body = JSON.stringify(json); }
-  const res = await fetch(path, { method, headers: h, body, signal });
+  let res;
+  try { res = await fetch(path, { method, headers: h, body, signal }); }
+  catch (err) {
+    if (err.name === "AbortError" || WEB()) throw err;
+    // the window lost its engine (it was closed or stopped): say what to do instead of "Failed to fetch"
+    const e = new Error("VoiceAssist stopped running in the background. Close this window and open VoiceAssist again from the Start menu.");
+    e.status = 0; throw e;
+  }
   if (raw) return res;
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && data.auth === "required" && S.user) { signedOut(); }
@@ -167,6 +174,25 @@ const player = new Player();
 class Mic {
   constructor() { this.stream = null; this.ctx = null; this.node = null; this.analyser = null; this.sr = 48000; this.onFrame = null; this.deviceId = ""; }
   get active() { return !!this.stream; }
+  /** Windows refused the microphone ("busy or blocked"). Often only one device or one audio-processing mode fails —
+   *  e.g. the driver's own sound effects clash with echo cancellation, or the default device is a headset that isn't
+   *  connected — so try plain audio, then every other microphone. */
+  async fallbackStream(firstError) {
+    const gum = (c) => navigator.mediaDevices.getUserMedia({ audio: c });
+    await new Promise((r) => setTimeout(r, 400));
+    try { return await gum({ echoCancellation: false, noiseSuppression: false, autoGainControl: false }); } catch (_) {}
+    try { return await gum(true); } catch (_) {}
+    let inputs = [];
+    try { inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput" && d.deviceId && !["default", "communications"].includes(d.deviceId)); } catch (_) {}
+    for (const d of inputs) {
+      try {
+        const st = await gum({ deviceId: { exact: d.deviceId } });
+        toast(`Using microphone: ${d.label || "another microphone"}`, 4000);
+        return st;
+      } catch (_) {}
+    }
+    throw firstError;
+  }
   async start(deviceId) {
     if (this.stream) return;
     if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("This window cannot access a microphone."), { name: "NotSupportedError" });
@@ -179,6 +205,8 @@ class Mic {
       if (this.deviceId && (e.name === "OverconstrainedError" || e.name === "NotFoundError")) {
         toast("Selected microphone not found — using the default one");
         delete constraints.audio.deviceId; this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } else if (e.name === "NotReadableError" || e.name === "TrackStartError" || e.name === "AbortError") {
+        this.stream = await this.fallbackStream(e);
       } else throw e;
     }
     const track = this.stream.getAudioTracks()[0];
@@ -292,7 +320,7 @@ function micErrorMessage(e) {
     case "NotFoundError": case "OverconstrainedError":
       return ["No microphone was found.", "Plug in or enable a microphone, then press the mic button again. Check Windows Settings → System → Sound → Input."];
     case "NotReadableError": case "AbortError":
-      return ["The microphone is busy or blocked by Windows.", "Close other apps using the mic (Teams, Zoom, Sound Recorder) and try again."];
+      return ["The microphone is busy or blocked by Windows.", "Close other windows using the mic (other Edge windows, Teams, Zoom, WhatsApp, Sound Recorder). Also check Windows Settings → Privacy & security → Microphone: 'Microphone access' and 'Let desktop apps access your microphone' must be on. Then press Retry."];
     default:
       return ["Could not start the microphone: " + (e?.message || e), "You can still type messages below."];
   }
@@ -369,9 +397,36 @@ function scrollDown() { const t = $("#transcript"); t.scrollTop = t.scrollHeight
 // ------------------------------------------------------------------ turns
 async function sendAudio(frames, sr) {
   const blob = await encodeWav16k(frames, sr);
+  if (S.settings?.ui?.review_voice !== false) return reviewAudio(blob);
   runTurn(blob, "audio/wav", null);
 }
+
+/** "Check before sending": write down what was said into the message box; nothing is sent until the user presses Send. */
+async function reviewAudio(blob) {
+  interrupt("new-turn");
+  if (S.session) { S.session = false; vad.reset(); mic.stop(); }   // stop listening while the user checks the words
+  setStatus("thinking", "Writing down what you said…");
+  try {
+    const r = await api("/api/transcribe", { method: "POST", body: blob, headers: { "Content-Type": "audio/wav" } });
+    const heard = (r.text || "").trim();
+    if (!heard) { toast("Didn't catch that — please try again"); return; }
+    const box = $("#text-in");
+    box.value = box.value.trim() ? box.value.trim() + " " + heard : heard;
+    showReview(true);
+    box.focus(); box.setSelectionRange(box.value.length, box.value.length);
+  } catch (e) {
+    toast(e.message || "Couldn't recognise the speech");
+  } finally {
+    afterActivity();
+    if (S.status === "off" && $("#text-in").value) $("#live-caption").textContent = "Check the message below, then press Send";
+  }
+}
+function showReview(on) {
+  $("#review-hint").hidden = !on;
+  $("#text-form").classList.toggle("review", on);
+}
 function sendText(text) {
+  showReview(false);
   if (!text.trim()) return;
   player.ensure();
   runTurn(JSON.stringify({ text, conversation_id: S.convId }), "application/json", text);
@@ -882,6 +937,8 @@ function wire() {
   $$("#mode-seg button").forEach((b) => (b.onclick = () => saveSettings({ mode: b.dataset.mode })));
   $("#model-select").onchange = (e) => onModelSelect(e.target.value);
   $("#text-form").onsubmit = (e) => { e.preventDefault(); const v = $("#text-in").value; $("#text-in").value = ""; sendText(v); };
+  $("#btn-review-discard").onclick = () => { $("#text-in").value = ""; showReview(false); };
+  $("#text-in").addEventListener("input", () => { if (!$("#text-in").value) showReview(false); });
 
   $("#btn-settings").onclick = () => openSettings();
   $("#btn-close-settings").onclick = closeSettings;

@@ -138,6 +138,7 @@ class Api(private val core: VoiceAssistCore) {
             m == "POST" && p == "/api/setup/cancel" -> { core.setup.cancel(); json(c.res, jsonOf("ok" to true)) }
             m == "GET" && p == "/api/events" -> events(c)
             m == "POST" && p == "/api/turn" -> turn(c)
+            m == "POST" && p == "/api/transcribe" -> json(c.res, core.engine.transcribeOnly(c.req.body))
             m == "POST" && p == "/api/cancel" -> json(c.res, jsonOf("cancelled" to core.engine.cancel(c.json().optString("turn_id", null))))
             m == "GET" && p.startsWith("/api/audio/") -> {
                 val wav = core.engine.audio.pop(p.removePrefix("/api/audio/")) ?: return err(c.res, 404, "audio expired")

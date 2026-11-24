@@ -175,6 +175,18 @@ class Engine(private val core: VoiceAssistCore) {
         return false
     }
 
+    /** Speech -> text without answering: the window shows the words so the user can check them first. */
+    fun transcribeOnly(wav: ByteArray): JSONObject {
+        val (samples, rate) = Wav.decode(wav)
+        if (settings.bool("privacy.save_recordings")) runCatching {
+            core.paths.recordings.mkdirs(); File(core.paths.recordings, "rec-${System.currentTimeMillis()}.wav").writeBytes(wav)
+        }
+        val x = Wav.resample(samples, rate, 16000)
+        val t0 = System.currentTimeMillis()
+        val text = if (x.size / 16000.0 < 0.2) "" else cleanTranscript(sttEngine().transcribe(x))
+        return jsonOf("text" to text, "engine" to "whisper ${settings.str("stt.model")} (on-device)", "seconds" to (System.currentTimeMillis() - t0) / 1000.0)
+    }
+
     private fun runTurn(turn: Turn, wav: ByteArray?, typed: String?) {
         var (route, reason) = core.conn.route()
         turn.put("route", "route" to route, "reason" to reason, "network" to core.conn.state)

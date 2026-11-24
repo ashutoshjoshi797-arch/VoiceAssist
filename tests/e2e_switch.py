@@ -55,6 +55,8 @@ def main() -> int:
             page = b.new_context(bypass_csp=True, viewport={"width": 1240, "height": 860}).new_page()
             page.goto(url)
             ensure_signed_in(page)
+            page.wait_for_function("S.settings && S.settings.ui", timeout=15000)
+            page.evaluate("saveSettings({ui: {review_voice: false}})")
 
             def ask(text):
                 n = page.evaluate("document.querySelectorAll('.msg-row.assistant .meta').length")

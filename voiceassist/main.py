@@ -83,6 +83,44 @@ def existing_instance_url() -> str | None:
     return None
 
 
+_instance_lock = None
+
+
+def acquire_instance_lock() -> bool:
+    """One engine per user: an OS-level lock on a file in the data folder, held while the engine runs.
+
+    Clicking the shortcut several times quickly used to start several engines at once (each checked for a running
+    one before any had started); the extra ones then shut down and left windows showing "Failed to fetch"."""
+    global _instance_lock
+    f = open(paths.data_dir() / "engine.lock", "a+b")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return False
+    _instance_lock = f
+    return True
+
+
+def wait_for_running_instance(timeout: float = 30) -> str | None:
+    """Another launch holds the lock and is starting up: wait until it answers, then use it."""
+    end = time.time() + timeout
+    while time.time() < end:
+        url = existing_instance_url()
+        if url:
+            return url
+        if acquire_instance_lock():   # the other launch went away without starting
+            return None
+        time.sleep(0.5)
+    return None
+
+
 def build_app(settings: Settings | None = None) -> App:
     settings = settings or Settings()
     netutil.set_socket_guard(bool(settings.get("strict_offline")))
@@ -127,8 +165,18 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     setup_logging(a.verbose)
-    running = existing_instance_url()
-    if running and not a.no_window:
+    running = None
+    if not acquire_instance_lock():
+        running = wait_for_running_instance()
+        if not running and _instance_lock is None:
+            log.error("another VoiceAssist engine is starting but did not answer — try again in a few seconds")
+            return 1
+    else:
+        running = existing_instance_url()   # a pre-1.2 engine (no lock) may still be running
+    if running and a.no_window:
+        log.info("VoiceAssist is already running: %s", running.split("#")[0])
+        return 0
+    if running:
         log.info("VoiceAssist is already running — opening a window for it")
         from .window import open_window
         open_window(running, a.window)
@@ -155,9 +203,14 @@ def main(argv=None) -> int:
     try:
         while not stop.is_set() and not app.shutdown_event.is_set():
             time.sleep(0.5)
-            if proc is not None and proc.poll() is not None and time.time() - started > 8:
-                log.info("window closed")
-                break
+            if proc is not None and proc.poll() is not None:
+                if time.time() - started < 8:
+                    # the browser handed the window to an already-running browser process and exited at once:
+                    # its exit says nothing about the window, so rely on the window's beacons/pings instead
+                    proc = None
+                else:
+                    log.info("window closed")
+                    break
             # Fallback for browsers that hand the window to an existing process:
             if app.bye_at and time.time() - app.bye_at > 4 and app.last_ping < app.bye_at:
                 log.info("window closed (beacon)")

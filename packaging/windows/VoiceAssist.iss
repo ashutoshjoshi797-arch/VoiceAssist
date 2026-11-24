@@ -7,7 +7,7 @@
 ; Per-user install, no admin rights. The right Python is chosen for the PC (ARM64 or x64).
 
 #ifndef AppVer
-  #define AppVer "1.1.0"
+  #define AppVer "1.1.1"
 #endif
 
 [Setup]

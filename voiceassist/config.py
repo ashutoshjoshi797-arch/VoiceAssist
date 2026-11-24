@@ -93,6 +93,7 @@ DEFAULTS: dict[str, Any] = {
     # UI-only preferences (persisted here so they survive browser-profile resets).
     "ui": {
         "conversation_style": "handsfree",  # handsfree | ptt
+        "review_voice": True,               # show what was heard in the text box; the user checks it and sends
         "mic_device": "",
         "speaker_device": "",
         "vad_sensitivity": 0.5,

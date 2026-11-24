@@ -132,6 +132,10 @@ enable them in Settings → Online AI → Cloud speech.
 
 ## 6. Using it
 
+**Check before sending (on by default).** When you speak, VoiceAssist writes what it heard into the message box
+and stops listening. Fix anything that's wrong, then press **Send** (or Enter) — or **Discard**. Untick
+"Check before sending" (next to the mic, or Settings → Audio) to have spoken questions sent straight away.
+
 * **Hands-free** (default): press the mic once. Speak; it detects when you stop, answers aloud, and
   keeps listening for your follow-up. Talk over it to interrupt. Press the mic again to stop.
 * **Push-to-talk**: switch the toggle, then hold the mic button or <kbd>Space</kbd> while speaking.

@@ -155,10 +155,15 @@ def main() -> int:
         if page.is_hidden("#voice-panel"):
             page.click("#btn-voice-toggle")
         page.click("#btn-mic")
+        # "check before sending" (default): the words wait in the message box until the user presses Send
+        page.wait_for_function("!document.querySelector('#review-hint').hidden", timeout=60000)
+        box = page.input_value("#text-in")
+        check("check before sending: what was heard waits in the message box", "france" in box.lower()
+              and page.evaluate("document.querySelectorAll('.msg-row.assistant').length") == n0, box)
+        page.press("#text-in", "Enter")
         page.wait_for_function(f"document.querySelectorAll('.msg-row.user').length >= 3 && [...document.querySelectorAll('.msg-row.assistant .bubble')].length > {n0} && /Paris/.test([...document.querySelectorAll('.msg-row.assistant .bubble')].at(-1).textContent)", timeout=60000)
         heard = page.evaluate("[...document.querySelectorAll('.msg-row.user .bubble')].at(-1).textContent")
-        check("spoken question recognised and answered", "france" in heard.lower() and seen["openai_stt"] > 0, heard)
-        page.click("#btn-mic")
+        check("spoken question recognised, checked, sent and answered", "france" in heard.lower() and seen["openai_stt"] > 0, heard)
         page.screenshot(path=f"{a.shots}/web_online.png")
 
         # internet off: the website does NOT answer offline, it says to reconnect

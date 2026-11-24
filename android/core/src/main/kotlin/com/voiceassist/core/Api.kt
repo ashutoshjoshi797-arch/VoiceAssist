@@ -160,8 +160,12 @@ class Api(private val core: VoiceAssistCore) {
             p.startsWith("/api/conversations/") -> {
                 val cid = p.removePrefix("/api/conversations/")
                 if (!core.history.exists(cid, c.uid)) return err(c.res, 404, "conversation not found")
-                if (m == "DELETE") { core.history.delete(cid); json(c.res, jsonOf("ok" to true)) }
-                else json(c.res, jsonOf("id" to cid, "messages" to core.history.messages(cid)))
+                when (m) {
+                    "DELETE" -> { core.history.delete(cid); json(c.res, jsonOf("ok" to true)) }
+                    "POST" -> try { json(c.res, jsonOf("ok" to true, "conversation" to core.history.update(cid, c.json()))) }
+                              catch (e: IllegalArgumentException) { err(c.res, 400, e.message ?: "bad request") }
+                    else -> json(c.res, jsonOf("id" to cid, "messages" to core.history.messages(cid)))
+                }
             }
             m == "POST" && p == "/api/history/clear" -> { core.history.clear(c.uid); json(c.res, jsonOf("ok" to true)) }
             m == "GET" && p == "/api/local/models" -> json(c.res, jsonOf("running" to true, "installed" to jsonArrayOf(ModelCatalog.installedLlms(core.paths)),

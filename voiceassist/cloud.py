@@ -274,6 +274,13 @@ class CloudAccounts:
             self._save()
 
     # ----------------------------------------------------------------- cloud AI
+    def transcribe(self, user_id: str, wav: bytes, timeout: float = 20) -> str:
+        """Speech -> text with the cloud AI (better with names and accents than the small offline model)."""
+        import base64
+        r = self._call("POST", "/functions/v1/chat", {"transcribe": base64.b64encode(wav).decode("ascii")},
+                       token=self.access_token(user_id), timeout=timeout)
+        return str(r.get("text") or "").strip()
+
     def usage(self, user_id: str) -> dict:
         return self._call("GET", "/functions/v1/chat", token=self.access_token(user_id), timeout=10)
 

@@ -24,6 +24,10 @@ CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conv_id, id);
 """
 
 
+FLAGS = ("pinned", "archived", "unread")
+TITLE_MAX = 80
+
+
 class HistoryStore:
     def __init__(self, path: str | None):
         self.persistent = path is not None
@@ -38,6 +42,9 @@ class HistoryStore:
             cols = [r[1] for r in self._db.execute("PRAGMA table_info(conversations)")]
             if "user_id" not in cols:  # databases created before accounts existed
                 self._db.execute("ALTER TABLE conversations ADD COLUMN user_id INTEGER")
+            for flag in FLAGS:  # pinned / archived / unread (added in 1.2.1)
+                if flag not in cols:
+                    self._db.execute(f"ALTER TABLE conversations ADD COLUMN {flag} INTEGER NOT NULL DEFAULT 0")
             self._db.execute("CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id, updated)")
             self._db.commit()
 
@@ -73,6 +80,10 @@ class HistoryStore:
                 (cid, role, content, now, json.dumps(meta or {})),
             )
             self._db.execute("UPDATE conversations SET updated=? WHERE id=?", (now, cid))
+            if role == "assistant":   # a new answer: unread until the window showing it marks it read
+                self._db.execute("UPDATE conversations SET unread=1 WHERE id=?", (cid,))
+            elif role == "user":      # talking in an archived conversation brings it back
+                self._db.execute("UPDATE conversations SET archived=0 WHERE id=?", (cid,))
             row = self._db.execute("SELECT title FROM conversations WHERE id=?", (cid,)).fetchone()
             if role == "user" and row and row["title"] == "New conversation":
                 title = content.strip().replace("\n", " ")
@@ -101,10 +112,29 @@ class HistoryStore:
         where, args = ("WHERE c.user_id=? ", (user_id, limit)) if user_id is not None else ("", (limit,))
         with self._lock:
             rows = self._db.execute(
-                "SELECT c.id, c.title, c.created, c.updated, COUNT(m.id) AS n FROM conversations c "
-                f"LEFT JOIN messages m ON m.conv_id=c.id {where}GROUP BY c.id ORDER BY c.updated DESC LIMIT ?", args
+                "SELECT c.id, c.title, c.created, c.updated, c.pinned, c.archived, c.unread, COUNT(m.id) AS n "
+                f"FROM conversations c LEFT JOIN messages m ON m.conv_id=c.id {where}"
+                "GROUP BY c.id ORDER BY c.pinned DESC, c.updated DESC LIMIT ?", args
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [{**dict(r), **{f: bool(r[f]) for f in FLAGS}} for r in rows]
+
+    def update(self, cid: str, title: str | None = None, **flags) -> dict:
+        """Rename a conversation and/or set its pinned / archived / unread flags. Returns the new values."""
+        sets, args = [], []
+        if title is not None:
+            title = " ".join(str(title).split())[:TITLE_MAX]
+            if not title:
+                raise ValueError("The name can't be empty.")
+            sets.append("title=?"); args.append(title)
+        for k, v in flags.items():
+            if k in FLAGS and v is not None:
+                sets.append(f"{k}=?"); args.append(1 if v else 0)
+        with self._lock:
+            if sets:
+                self._db.execute(f"UPDATE conversations SET {', '.join(sets)} WHERE id=?", (*args, cid))
+                self._db.commit()
+            r = self._db.execute("SELECT id, title, pinned, archived, unread FROM conversations WHERE id=?", (cid,)).fetchone()
+        return {**dict(r), **{f: bool(r[f]) for f in FLAGS}} if r else {}
 
     def delete(self, cid: str) -> None:
         with self._lock:

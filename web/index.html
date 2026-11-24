@@ -147,6 +147,15 @@
       <button class="btn primary wide" id="btn-new">+ New conversation</button>
       <div class="side-title">History</div>
       <ul class="conv-list" id="conv-list"></ul>
+      <div class="conv-menu" id="conv-menu" role="menu" aria-label="Conversation options" hidden>
+        <button role="menuitem" type="button" data-act="window"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span>Open in new window</span></button>
+        <button role="menuitem" type="button" data-act="read"><svg viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></svg><span>Mark as read</span></button>
+        <button role="menuitem" type="button" data-act="pin"><svg viewBox="0 0 24 24"><path d="M15 3l6 6-3 1-4 4 .5 4.5L13 20l-4-4-5 5M9 16l-5-5 1.5-1.5L10 10l4-4 1-3"/></svg><span>Pin</span></button>
+        <button role="menuitem" type="button" data-act="rename"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4"/></svg><span>Rename</span></button>
+        <button role="menuitem" type="button" data-act="archive"><svg viewBox="0 0 24 24"><path d="M3 5h18v4H3zM5 9v10h14V9M10 13h4"/></svg><span>Archive</span></button>
+        <div class="menu-sep" role="separator"></div>
+        <button role="menuitem" type="button" data-act="delete" class="danger"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg><span>Delete</span></button>
+      </div>
       <div class="side-foot">
         <div class="user-chip-wrap">
           <button class="user-chip" id="user-chip" aria-haspopup="menu" aria-expanded="false" title="Account">
@@ -172,7 +181,7 @@
         <div class="empty" id="empty-state">
           <div class="orb-hero"></div>
           <h1>Talk to your AI — online or offline</h1>
-          <p>Press the microphone and start speaking. In <b>Hands-free</b> mode I listen continuously and you can interrupt me any time. <span class="kbd-hint">Hold <kbd>Space</kbd> in <b>Push-to-talk</b> mode.</span><span class="touch-hint">In <b>Push-to-talk</b> mode, hold the mic button while you speak.</span></p>
+          <p>Press the microphone and start speaking. In <b>Hands-free</b> mode I listen continuously and you can interrupt me any time. <span class="kbd-hint">In <b>Tap to talk</b> mode, tap the mic (or <kbd>Space</kbd>) once and speak — it stops by itself when you finish.</span><span class="touch-hint">In <b>Tap to talk</b> mode, tap the mic once and speak — it stops by itself when you finish.</span></p>
         </div>
       </section>
 
@@ -186,7 +195,7 @@
         <div class="controls">
           <div class="seg small" id="style-seg" role="radiogroup" aria-label="Conversation style">
             <button data-style="handsfree" role="radio">Hands-free</button>
-            <button data-style="ptt" role="radio">Push-to-talk</button>
+            <button data-style="ptt" role="radio" title="Tap the mic once and speak; it stops when you stop talking (holding it also works)">Tap to talk</button>
           </div>
 
           <label class="check small review-chip" title="Show what I heard in the message box so you can check it before it's sent"><input type="checkbox" data-setting="ui.review_voice"> Check before sending</label>
@@ -354,6 +363,7 @@
         <label class="field"><span>End of speech after silence (ms)</span><input type="number" min="300" max="3000" step="50" data-setting="ui.silence_ms"></label>
         <label class="check"><input type="checkbox" data-setting="ui.review_voice"> Check my words before sending (what I say goes into the message box first)</label>
         <label class="check"><input type="checkbox" data-setting="ui.barge_in"> Let me interrupt the assistant by speaking</label>
+        <label class="check offline-feature pc-only"><input type="checkbox" data-setting="stt.cloud_when_online"> Better speech recognition when online — understands names and Indian accents much better. Your recording is sent to the VoiceAssist cloud (Google Gemini); offline, the on-device model is used.</label>
         <div class="meter"><span>Input level</span><div class="bar"><i id="level-bar"></i><b id="thresh-mark"></b></div></div>
       </section>
 

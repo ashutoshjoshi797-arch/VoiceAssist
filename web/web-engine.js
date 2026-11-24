@@ -171,12 +171,26 @@
     add(cid, role, content, meta = {}) {
       const c = this.db.convs[cid], id = this.db.next_msg++;
       c.messages.push({ id, role, content, created: now(), meta }); c.updated = now();
+      if (role === "assistant") c.unread = true; else if (role === "user") c.archived = false;
       if (role === "user" && c.title === "New conversation") { const t = content.trim().replace(/\n/g, " "); c.title = t.length > 60 ? t.slice(0, 60) + "…" : t; }
       this.save(); return id;
     },
     list(userId) {
-      return Object.values(this.db.convs).filter((c) => c.user_id === userId).sort((a, b) => b.updated - a.updated).slice(0, 200)
-        .map((c) => ({ id: c.id, title: c.title, created: c.created, updated: c.updated, n: c.messages.length }));
+      return Object.values(this.db.convs).filter((c) => c.user_id === userId)
+        .sort((a, b) => (!!b.pinned - !!a.pinned) || b.updated - a.updated).slice(0, 200)
+        .map((c) => ({ id: c.id, title: c.title, created: c.created, updated: c.updated, n: c.messages.length,
+          pinned: !!c.pinned, archived: !!c.archived, unread: !!c.unread }));
+    },
+    update(cid, b) {
+      const c = this.db.convs[cid];
+      if (b.title != null) {
+        const t = String(b.title).split(/\s+/).filter(Boolean).join(" ").slice(0, 80);
+        if (!t) throw new Error("The name can't be empty.");
+        c.title = t;
+      }
+      for (const f of ["pinned", "archived", "unread"]) if (b[f] != null) c[f] = !!b[f];
+      this.save();
+      return { id: c.id, title: c.title, pinned: !!c.pinned, archived: !!c.archived, unread: !!c.unread };
     },
     del(cid) { delete this.db.convs[cid]; this.save(); },
     clear(userId) { for (const c of Object.values(this.db.convs)) if (c.user_id === userId) delete this.db.convs[c.id]; this.save(); },
@@ -497,6 +511,10 @@
       const cid = p.slice(19);
       if (!history.exists(cid, user.id)) return json({ error: "conversation not found" }, 404);
       if (method === "DELETE") { history.del(cid); return json({ ok: true }); }
+      if (method === "POST") {
+        try { return json({ ok: true, conversation: history.update(cid, b) }); }
+        catch (e) { return json({ error: e.message }, 400); }
+      }
       return json({ id: cid, messages: history.db.convs[cid].messages });
     }
     return json({ error: "not found" }, 404);

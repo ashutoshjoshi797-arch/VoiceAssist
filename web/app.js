@@ -5,8 +5,11 @@
 "use strict";
 
 // ------------------------------------------------------------------ bootstrap / API
-const TOKEN = new URLSearchParams(location.hash.slice(1)).get("token") || sessionStorage.getItem("va_token") || "";
-if (TOKEN) { sessionStorage.setItem("va_token", TOKEN); history.replaceState(null, "", location.pathname); }
+const HASH = new URLSearchParams(location.hash.slice(1));
+const TOKEN = HASH.get("token") || sessionStorage.getItem("va_token") || "";
+const START_CONV = /^[0-9a-z]{6,40}$/i.test(HASH.get("conv") || "") ? HASH.get("conv") : null;   // "Open in new window"
+if (TOKEN) sessionStorage.setItem("va_token", TOKEN);
+if (TOKEN || START_CONV) history.replaceState(null, "", location.pathname + location.search);
 
 window.__vaStats = { chunksPlayed: 0, secondsPlayed: 0 }; // read by the automated UI tests
 const $ = (s, r = document) => r.querySelector(s);
@@ -50,6 +53,9 @@ const S = {
   settings: null, state: null, net: null, route: null,
   convId: null, style: "handsfree", muted: false, session: false, // session = hands-free listening active
   status: "off", turn: null, localModels: [],
+  transcribing: null,                  // AbortController while "Check before sending" writes down the speech
+  tap: null,                           // "Tap to talk": listening for one question
+  convs: [], showArchived: false,      // sidebar
 };
 
 // ------------------------------------------------------------------ small UI helpers
@@ -79,7 +85,7 @@ function setStatus(status, text) {
   const mic = $("#btn-mic");
   mic.classList.remove("listening", "hearing", "thinking", "speaking", "off", "muted", "ptt-held");
   const label = {
-    off: S.style === "ptt" ? (dev() === "phone" ? "Hold the mic to talk" : "Hold the mic or Space to talk") : "Microphone off — press to start",
+    off: S.style === "ptt" ? (dev() === "phone" ? "Tap the mic and speak" : "Tap the mic (or Space) and speak") : "Microphone off — press to start",
     listening: "Listening…", hearing: "Hearing you…", thinking: "Thinking…", speaking: "Speaking — talk to interrupt",
     muted: "Microphone muted", ptt: "Recording — release to send",
   }[status] || status;
@@ -89,12 +95,29 @@ function setStatus(status, text) {
   else mic.classList.add(status === "hearing" ? "hearing" : status === "listening" ? "listening" : status);
   if (S.session && status !== "listening" && status !== "hearing" && status !== "muted") mic.classList.add("listening");
   $("#mic-state").textContent = text || label;
-  $("#live-caption").textContent = status === "off" ? (S.style === "ptt" ? (dev() === "phone" ? "Hold the mic button to talk" : "Hold Space or the mic button to talk") : "Press the microphone to start a conversation") : "";
-  $("#btn-stop").disabled = !(player.speaking || (S.turn && !S.turn.done));
+  $("#live-caption").textContent = status === "off" ? (S.style === "ptt" ? (dev() === "phone" ? "Tap the mic once and speak — I stop listening when you stop talking" : "Tap the mic (or Space) once and speak — I stop listening when you stop talking") : "Press the microphone to start a conversation") : "";
+  updateStopButton();
   const vt = $("#btn-voice-toggle");
   vt.className = "voice-toggle" + (status === "off" ? "" : " st-" + status);
   vt.title = (vt.getAttribute("aria-expanded") === "true" ? "Hide" : "Show") + " voice controls — " + (text || label);
   mic.setAttribute("aria-label", status === "off" ? "Start listening" : "Stop listening");
+}
+
+function canStop() { return !!(player.speaking || (S.turn && !S.turn.done) || S.session || S.tap || ptt || S.transcribing); }
+function updateStopButton() {
+  const b = $("#btn-stop"); if (!b) return;
+  b.disabled = !canStop();
+  b.title = player.speaking ? "Stop speaking (Esc)" : ptt ? "Cancel recording (Esc)" : S.transcribing ? "Cancel (Esc)"
+    : (S.turn && !S.turn.done) ? "Stop the answer (Esc)" : (S.session || S.tap) ? "Stop listening (Esc)" : "Stop (nothing is playing)";
+  b.setAttribute("aria-label", b.title);
+}
+/** The square button / Esc: stop everything that is going on, without sending anything. */
+function stopAll(reason = "stop-button") {
+  if (ptt) { ptt = null; pttHeld = false; }
+  if (S.tap) endTap();
+  if (S.transcribing) { try { S.transcribing.abort(); } catch (_) {} S.transcribing = null; }
+  if (S.session) { stopSession(); return; }
+  interrupt(reason);
 }
 
 // ------------------------------------------------------------------ audio: playback
@@ -279,16 +302,18 @@ mic.onFrame = (frame, rms) => {
   lastDb = db;
   if (S.muted) return;
   if (ptt) { ptt.frames.push(frame); return; }
-  if (!S.session) return;
+  if (!S.session && !S.tap) return;
   const speaking = player.speaking;
   if (speaking && (!S.settings.ui.barge_in || player.saying)) return;
   const r = vad.push(frame, db, speaking);
   if (r === "start") {
+    if (S.tap) S.tap.heard = true;
     if (speaking || (S.turn && !S.turn.done)) interrupt("barge-in");
-    setStatus("hearing");
+    setStatus("hearing", S.tap ? "Hearing you… (I stop when you stop talking)" : undefined);
   } else if (r === "discard") {
     if (S.status === "hearing") afterActivity();
   } else if (r && r.end) {
+    if (S.tap) endTap(true);
     sendAudio(r.end, mic.sr);
   }
 };
@@ -358,6 +383,7 @@ function afterActivity() {
   if (S.turn && !S.turn.done) { if (!player.speaking) setStatus("thinking"); return; }
   if (player.speaking) return;
   if (S.muted && (S.session || S.style === "ptt")) setStatus("muted");
+  else if (S.tap) setStatus("listening", "Listening — speak now");
   else if (S.session) setStatus("listening");
   else setStatus("off");
 }
@@ -404,9 +430,11 @@ async function sendAudio(frames, sr) {
 async function reviewAudio(blob) {
   interrupt("new-turn");
   if (S.session) { S.session = false; vad.reset(); mic.stop(); }   // stop listening while the user checks the words
+  const ctrl = new AbortController(); S.transcribing = ctrl;
   setStatus("thinking", "Writing down what you said…");
   try {
-    const r = await api("/api/transcribe", { method: "POST", body: blob, headers: { "Content-Type": "audio/wav" } });
+    const r = await api("/api/transcribe", { method: "POST", body: blob, headers: { "Content-Type": "audio/wav" }, signal: ctrl.signal });
+    if (ctrl.signal.aborted) return;
     const heard = (r.text || "").trim();
     if (!heard) { toast("Didn't catch that — please try again"); return; }
     const box = $("#text-in");
@@ -414,8 +442,9 @@ async function reviewAudio(blob) {
     showReview(true);
     box.focus(); box.setSelectionRange(box.value.length, box.value.length);
   } catch (e) {
-    toast(e.message || "Couldn't recognise the speech");
+    if (e.name !== "AbortError") toast(e.message || "Couldn't recognise the speech");
   } finally {
+    if (S.transcribing === ctrl) S.transcribing = null;
     afterActivity();
     if (S.status === "off" && $("#text-in").value) $("#live-caption").textContent = "Check the message below, then press Send";
   }
@@ -503,6 +532,7 @@ function handleEvent(t, ev) {
     case "no_speech":
       t.userRow.remove(); t.userRow = null; toast("Didn't catch that — please try again"); break;
     case "user_saved":
+      t.convId = ev.conversation_id;
       if (S.convId !== ev.conversation_id) { S.convId = ev.conversation_id; loadConversations(); }
       break;
     case "llm_start":
@@ -537,6 +567,9 @@ function handleEvent(t, ev) {
       if (!player.speaking && player.queue.size === 0) { S.turn = null; }
       player.pump();
       afterActivity();
+      // the answer is on screen, so it's read (the engine saved it, and marked it unread, before sending "done")
+      if (t.convId && t.convId === S.convId) api("/api/conversations/" + t.convId, { method: "POST", json: { unread: false } }).catch(() => {}).then(loadConversations);
+      else loadConversations();
       break;
     }
   }
@@ -590,13 +623,15 @@ function updatePrivacyLine() {
   }
   if (S.route.route === "local") html = `🔒 <b>Everything stays on this ${devLong()}</b> — speech recognition, AI and voice run locally.`;
   else {
-    html = `☁ Your question (as <b>text</b>) is answered by <b>${esc(providerName)}</b>. Your voice audio stays on this ${devLong()}, and replies are voiced on this ${devLong()}.`;
+    html = st.stt?.cloud_when_online && !WEB() && dev() !== "phone"
+      ? `☁ Your question is answered by <b>${esc(providerName)}</b>. Your speech is written down by the VoiceAssist cloud; replies are voiced on this ${devLong()}.`
+      : `☁ Your question (as <b>text</b>) is answered by <b>${esc(providerName)}</b>. Your voice audio stays on this ${devLong()}, and replies are voiced on this ${devLong()}.`;
   }
   $("#privacy-line").innerHTML = html;
   const pb = $("#privacy-box");
   if (pb) pb.innerHTML = `<b>How your data is handled</b><ul>
     <li><b>Offline / Local only:</b> audio, transcripts and answers never leave this ${devLong()}. The app only talks to 127.0.0.1.</li>
-    <li><b>Online:</b> the text of your question and recent conversation is sent to the VoiceAssist cloud, which asks Google's Gemini AI. Your voice audio never leaves this ${devLong()}.</li>
+    <li><b>Online:</b> the text of your question and recent conversation is sent to the VoiceAssist cloud, which asks Google's Gemini AI. ${st.stt?.cloud_when_online && dev() !== "phone" ? "Because <b>Better speech recognition when online</b> is on, your voice recordings are also sent there to be written down." : `Your voice audio never leaves this ${devLong()}.`}</li>
     <li>Recordings are ${st.privacy.save_recordings ? "<b>saved</b> to the recordings folder" : "<b>not saved</b> (kept in memory only while being recognised)"}.</li>
     <li>History is ${st.privacy.save_history ? "saved locally in a SQLite file" : "kept in memory only and erased on exit"}.</li>
     <li>Your account (email and name) is kept by the VoiceAssist cloud so the same login works on all your devices. Your conversation history stays on this ${devLong()}.</li></ul>`;
@@ -786,21 +821,135 @@ function drawLoop() {
 }
 
 // ------------------------------------------------------------------ conversations sidebar
+const ICON_PIN = `<svg class="pin-ic" viewBox="0 0 24 24" aria-label="Pinned"><path d="M15 3l6 6-3 1-4 4 .5 4.5L13 20l-4-4-5 5-1-1 5-5-4-4 1.5-1.5L10 10l4-4 1-3z"/></svg>`;
+const ICON_DOTS = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>`;
+
 async function loadConversations() {
   try {
     const { conversations } = await api("/api/conversations");
-    $("#conv-list").innerHTML = conversations.map((c) => `<li data-id="${c.id}" class="${c.id === S.convId ? "active" : ""}"><span title="${esc(c.title)}">${esc(c.title)}</span><button title="Delete" aria-label="Delete conversation">✕</button></li>`).join("") || `<li class="muted small">No conversations yet</li>`;
+    S.convs = conversations || [];
+    renderConversations();
   } catch (e) { console.warn(e); }
+}
+function convItem(c) {
+  const cls = [c.id === S.convId ? "active" : "", c.unread ? "unread" : "", c.pinned ? "pinned" : ""].filter(Boolean).join(" ");
+  return `<li data-id="${c.id}" class="${cls}" title="${esc(c.title)}">${c.pinned ? ICON_PIN : ""}<span class="conv-title">${esc(c.title)}</span>` +
+    (c.unread ? `<i class="unread-dot" aria-label="Unread"></i>` : "") +
+    `<button class="conv-more" type="button" title="More options" aria-label="More options for “${esc(c.title)}”" aria-haspopup="menu">${ICON_DOTS}</button></li>`;
+}
+function renderConversations() {
+  const open = S.convs.filter((c) => !c.archived), arch = S.convs.filter((c) => c.archived);
+  let html = open.map(convItem).join("") || `<li class="muted small empty-li">No conversations yet</li>`;
+  if (arch.length) {
+    html += `<li class="conv-section" data-section="archived" role="button" aria-expanded="${S.showArchived}">` +
+      `<span>Archived (${arch.length})</span><b>${S.showArchived ? "▾" : "▸"}</b></li>`;
+    if (S.showArchived) html += arch.map(convItem).join("");
+  }
+  $("#conv-list").innerHTML = html;
+}
+async function updateConversation(id, changes) {
+  const r = await api("/api/conversations/" + id, { method: "POST", json: changes });
+  const c = S.convs.find((x) => x.id === id);
+  if (c && r.conversation) Object.assign(c, r.conversation);
+  await loadConversations();
+  return r.conversation;
+}
+function markRead(id) {
+  const c = S.convs.find((x) => x.id === id);
+  if (c && !c.unread) return;
+  api("/api/conversations/" + id, { method: "POST", json: { unread: false } }).then(loadConversations).catch(() => {});
 }
 async function openConversation(id) {
   interrupt("switch");
+  let messages;
+  try { ({ messages } = await api("/api/conversations/" + id)); }
+  catch (e) { toast(e.status === 404 ? "That conversation no longer exists" : e.message); loadConversations(); return; }
   S.convId = id; clearTranscript();
-  const { messages } = await api("/api/conversations/" + id);
   if (!messages.length) showEmpty(true);
-  for (const m of messages) addMsg(m.role, m.content, m.role === "assistant" ? m.meta : { stt: m.meta.input === "voice" ? m.meta.stt : "typed" });
-  loadConversations();
+  for (const m of messages) addMsg(m.role, m.content, m.role === "assistant" ? m.meta : { stt: m.meta?.input === "voice" ? m.meta.stt : "typed" });
+  $("#sidebar").classList.remove("open");
+  renderConversations();
+  markRead(id);
 }
-function newConversation() { interrupt("new"); S.convId = null; clearTranscript(); showEmpty(true); loadConversations(); }
+
+// ------------------------------------------------------------------ sidebar: the ⋯ menu of a conversation
+let convMenuFor = null;
+function openConvMenu(id, btn) {
+  const c = S.convs.find((x) => x.id === id); if (!c) return;
+  const m = $("#conv-menu");
+  if (convMenuFor === id && !m.hidden) { closeConvMenu(); return; }
+  convMenuFor = id;
+  m.querySelector('[data-act="read"] span').textContent = c.unread ? "Mark as read" : "Mark as unread";
+  m.querySelector('[data-act="pin"] span').textContent = c.pinned ? "Unpin" : "Pin";
+  m.querySelector('[data-act="archive"] span').textContent = c.archived ? "Unarchive" : "Archive";
+  m.hidden = false;
+  const r = btn.getBoundingClientRect(), mh = m.offsetHeight, mw = m.offsetWidth;
+  const top = r.bottom + 4 + mh > innerHeight - 8 ? Math.max(8, r.top - mh - 4) : r.bottom + 4;
+  m.style.top = top + "px";
+  m.style.left = Math.max(8, Math.min(r.right - mw, innerWidth - mw - 8)) + "px";
+  $$("#conv-list li.menu-open").forEach((li) => li.classList.remove("menu-open"));
+  btn.closest("li")?.classList.add("menu-open");
+  btn.setAttribute("aria-expanded", "true");
+  m.querySelector("button").focus();
+}
+function closeConvMenu() {
+  const m = $("#conv-menu"); if (!m || m.hidden) return;
+  m.hidden = true; convMenuFor = null;
+  $$("#conv-list li.menu-open").forEach((li) => { li.classList.remove("menu-open"); li.querySelector(".conv-more")?.setAttribute("aria-expanded", "false"); });
+}
+async function convAction(act, id) {
+  closeConvMenu();
+  const c = S.convs.find((x) => x.id === id); if (!c) return;
+  try {
+    switch (act) {
+      case "window": {
+        const hash = (TOKEN ? "token=" + encodeURIComponent(TOKEN) + "&" : "") + "conv=" + encodeURIComponent(id);
+        const w = window.open(location.pathname + "#" + hash, "_blank", "popup,width=1100,height=780");
+        if (!w) toast("The window was blocked — allow pop-ups for VoiceAssist");
+        break;
+      }
+      case "read": await updateConversation(id, { unread: !c.unread }); toast(c.unread ? "Marked as unread" : "Marked as read"); break;
+      case "pin": await updateConversation(id, { pinned: !c.pinned }); toast(c.pinned ? "Pinned to the top" : "Unpinned"); break;
+      case "rename": startRename(id); break;
+      case "archive":
+        await updateConversation(id, { archived: !c.archived });
+        toast(c.archived ? "Conversation archived — find it under “Archived”" : "Conversation restored");
+        break;
+      case "delete":
+        if (!confirm(`Delete “${c.title}”?\n\nThis removes the whole conversation and can't be undone.`)) return;
+        await api("/api/conversations/" + id, { method: "DELETE" });
+        if (id === S.convId) newConversation(); else loadConversations();
+        toast("Conversation deleted");
+        break;
+    }
+  } catch (e) { toast(e.message || "That didn't work — please try again", 4000); }
+}
+function startRename(id) {
+  const li = $(`#conv-list li[data-id="${id}"]`), c = S.convs.find((x) => x.id === id);
+  if (!li || !c) return;
+  const span = li.querySelector(".conv-title");
+  const input = document.createElement("input");
+  input.className = "conv-rename"; input.value = c.title; input.maxLength = 80; input.setAttribute("aria-label", "Conversation name");
+  span.replaceWith(input); li.classList.add("renaming");
+  input.focus(); input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return; done = true;
+    const v = input.value.trim();
+    if (save && v && v !== c.title) {
+      try { await updateConversation(id, { title: v }); toast("Renamed"); return; }
+      catch (e) { toast(e.message, 4000); }
+    }
+    renderConversations();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("click", (e) => e.stopPropagation());
+}
+function newConversation() { interrupt("new"); S.convId = null; clearTranscript(); showEmpty(true); $("#sidebar").classList.remove("open"); loadConversations(); }
 
 // ------------------------------------------------------------------ settings drawer
 function openSettings(tab) {
@@ -882,23 +1031,68 @@ function setStyle(style) {
   S.style = style;
   $$("#style-seg button").forEach((b) => b.classList.toggle("active", b.dataset.style === style));
   if (style === "ptt") { S.session = false; vad.reset(); }
+  else if (S.tap) endTap();
   saveSettings({ ui: { conversation_style: style } });
   afterActivity();
 }
 
-async function pttStart() {
-  if (S.style !== "ptt" || ptt) return;
+/** Tap to talk: one tap starts listening for ONE question; it ends by itself when you stop talking
+ *  (or tap again to finish now). Holding the button / Space still works as push-to-talk. */
+async function startTap() {
+  if (S.tap) return;
+  player.ensure();
   if (!(await ensureMic())) return;
   if (S.muted) { toast("Microphone is muted"); return; }
+  interrupt("tap");
+  vad.reset();
+  S.tap = { heard: false, timer: setTimeout(() => {
+    if (S.tap && !S.tap.heard) { endTap(); toast("I didn't hear anything — tap the mic and speak"); }
+  }, 10000) };
+  setStatus("listening", "Listening — speak now");
+}
+function endTap(sending = false) {
+  if (!S.tap) return;
+  clearTimeout(S.tap.timer); S.tap = null;
+  if (!sending) vad.reset();
+  afterActivity();
+}
+/** Second tap while listening: send what was said so far (or just stop if nothing was said). */
+function finishTap() {
+  if (!S.tap) return;
+  const frames = vad.inSpeech && vad.speechFrames * 20 >= 250 ? vad.frames : null;
+  endTap(!!frames); vad.reset();
+  if (frames) sendAudio(frames, mic.sr);
+}
+
+let pttHeld = false, pressAt = 0;
+function pressDown() {
+  if (S.style !== "ptt") return;
+  if (S.tap) { pressAt = 0; finishTap(); return; }
+  pressAt = performance.now();
+  pttStart();
+}
+function pressUp() {
+  if (S.style !== "ptt" || !pressAt) return;
+  const quick = performance.now() - pressAt < 350; pressAt = 0;
+  if (quick) { ptt = null; pttHeld = false; startTap(); }   // a tap, not a hold
+  else pttEnd();
+}
+async function pttStart() {
+  if (S.style !== "ptt" || ptt || pttHeld) return;
+  pttHeld = true;
+  if (!(await ensureMic())) { pttHeld = false; return; }
+  if (!pttHeld) return;   // released while the microphone was starting
+  if (S.muted) { pttHeld = false; toast("Microphone is muted"); return; }
   interrupt("ptt"); player.ensure();
   ptt = { frames: [], t0: performance.now() };
   setStatus("ptt");
 }
 function pttEnd() {
+  pttHeld = false;
   if (!ptt) return;
   const p = ptt; ptt = null;
   const dur = performance.now() - p.t0;
-  if (dur < 300 || !p.frames.length) { afterActivity(); toast("Hold to talk, release to send"); return; }
+  if (dur < 300 || !p.frames.length) { afterActivity(); return; }
   sendAudio(p.frames, mic.sr);
 }
 
@@ -908,9 +1102,9 @@ function wire() {
     if (S.style === "ptt") return;
     S.session ? stopSession() : startSession();
   });
-  micBtn.addEventListener("pointerdown", (e) => { if (S.style === "ptt") { e.preventDefault(); micBtn.setPointerCapture(e.pointerId); pttStart(); } });
-  micBtn.addEventListener("pointerup", () => S.style === "ptt" && pttEnd());
-  micBtn.addEventListener("pointercancel", () => S.style === "ptt" && pttEnd());
+  micBtn.addEventListener("pointerdown", (e) => { if (S.style === "ptt") { e.preventDefault(); micBtn.setPointerCapture(e.pointerId); pressDown(); } });
+  micBtn.addEventListener("pointerup", () => pressUp());
+  micBtn.addEventListener("pointercancel", () => { if (S.style === "ptt") { pressAt = 0; pttEnd(); } });
 
   $("#btn-mute").onclick = () => {
     S.muted = !S.muted; mic.setMuted(S.muted);
@@ -919,7 +1113,8 @@ function wire() {
     if (S.muted) vad.reset();
     afterActivity();
   };
-  $("#btn-stop").onclick = () => interrupt("stop-button");
+  $("#btn-stop").onclick = () => stopAll("stop-button");
+  addEventListener("blur", () => { if (ptt || pttHeld) { pressAt = 0; pttEnd(); } });   // Space released in another window
   $("#btn-voice-toggle").onclick = () => setVoicePanel($("#voice-panel").hidden);
   $$("#style-seg button").forEach((b) => (b.onclick = () => setStyle(b.dataset.style)));
   $$("#mode-seg button").forEach((b) => (b.onclick = () => saveSettings({ mode: b.dataset.mode })));
@@ -935,13 +1130,29 @@ function wire() {
   $("#btn-sidebar").onclick = () => $("#sidebar").classList.toggle("open");
 
   $("#btn-new").onclick = newConversation;
-  $("#conv-list").onclick = async (e) => {
-    const li = e.target.closest("li[data-id]"); if (!li) return;
-    if (e.target.tagName === "BUTTON") {
-      await api("/api/conversations/" + li.dataset.id, { method: "DELETE" });
-      if (li.dataset.id === S.convId) newConversation(); else loadConversations();
-    } else openConversation(li.dataset.id);
+  $("#conv-list").onclick = (e) => {
+    if (e.target.closest(".conv-section")) { S.showArchived = !S.showArchived; renderConversations(); return; }
+    const li = e.target.closest("li[data-id]"); if (!li || li.classList.contains("renaming")) return;
+    const more = e.target.closest(".conv-more");
+    if (more) { e.stopPropagation(); openConvMenu(li.dataset.id, more); return; }
+    if (li.dataset.id !== S.convId) openConversation(li.dataset.id);
   };
+  $("#conv-list").addEventListener("contextmenu", (e) => {   // right-click a conversation: same menu
+    const li = e.target.closest("li[data-id]"); if (!li) return;
+    e.preventDefault(); openConvMenu(li.dataset.id, li.querySelector(".conv-more"));
+  });
+  $("#conv-menu").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-act]"); if (b && convMenuFor) { e.stopPropagation(); convAction(b.dataset.act, convMenuFor); }
+  });
+  $("#conv-menu").addEventListener("keydown", (e) => {
+    const items = $$("#conv-menu button"), i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    if (e.key === "Tab") closeConvMenu();
+  });
+  document.addEventListener("click", (e) => { if (!e.target.closest("#conv-menu")) closeConvMenu(); });
+  addEventListener("resize", closeConvMenu);
+  $("#conv-list").addEventListener("scroll", closeConvMenu);
   const clearAll = async () => {
     if (!confirm(`Delete all conversation history from this ${devLong()}?`)) return;
     await api("/api/history/clear", { method: "POST" }); newConversation(); toast("History deleted");
@@ -976,12 +1187,16 @@ function wire() {
 
   document.addEventListener("keydown", (e) => {
     const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
-    if (e.key === "Escape") { if ($("#drawer").classList.contains("open")) closeSettings(); else interrupt("esc"); }
+    if (e.key === "Escape") {
+      if (!$("#conv-menu").hidden) closeConvMenu();
+      else if ($("#drawer").classList.contains("open")) closeSettings();
+      else if (!document.activeElement?.classList.contains("conv-rename")) stopAll("esc");
+    }
     if (typing) return;
-    if (e.code === "Space" && S.style === "ptt" && !e.repeat) { e.preventDefault(); pttStart(); }
+    if (e.code === "Space" && S.style === "ptt" && !e.repeat) { e.preventDefault(); pressDown(); }
     if (e.key === "m" || e.key === "M") $("#btn-mute").click();
   });
-  document.addEventListener("keyup", (e) => { if (e.code === "Space" && S.style === "ptt") pttEnd(); });
+  document.addEventListener("keyup", (e) => { if (e.code === "Space" && S.style === "ptt") pressUp(); });
 
 }
 
@@ -1234,7 +1449,7 @@ async function startApp(user, claimed) {
     fill(); speechSynthesis.onvoiceschanged = fill;
   }
   connectEvents();
-  loadConversations();
+  if (START_CONV && !S.convId) openConversation(START_CONV); else loadConversations();
   setStatus("off");
   const st = await refreshSetup();
   if (st && !st.ready && st.job.state === "idle" && !sessionStorage.getItem("va_setup_offered")) {
@@ -1246,7 +1461,14 @@ async function startApp(user, claimed) {
 (async function init() {
   // keep-alive for the backend + tell it when the window closes (also on the sign-in page)
   setInterval(() => api("/api/ping", { method: "POST" }).catch(() => {}), 20000);
-  addEventListener("pagehide", () => navigator.sendBeacon("/api/bye?token=" + encodeURIComponent(TOKEN)));
+  // several windows ("Open in new window"): when one closes, the others say they're still here so the engine keeps running
+  const winBus = "BroadcastChannel" in window ? new BroadcastChannel("voiceassist-windows") : null;
+  if (winBus) winBus.onmessage = (e) => {
+    if (e.data !== "bye") return;
+    const ping = () => api("/api/ping", { method: "POST" }).catch(() => {});
+    ping(); setTimeout(ping, 1500);
+  };
+  addEventListener("pagehide", () => { navigator.sendBeacon("/api/bye?token=" + encodeURIComponent(TOKEN)); winBus?.postMessage("bye"); });
   api("/api/ping", { method: "POST" }).catch(() => {});
   // back from sleep / minimised: tell the engine straight away that this window is still here
   addEventListener("visibilitychange", () => { if (!document.hidden) api("/api/ping", { method: "POST" }).catch(() => {}); });

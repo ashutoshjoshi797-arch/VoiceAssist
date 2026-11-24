@@ -282,12 +282,29 @@ class Engine:
         self.bus.publish(self.local_status)
 
     # ------------------------------------------------------------------ turns
-    def transcribe_only(self, wav: bytes) -> dict:
+    def _cloud_stt(self, wav: bytes, user_id) -> dict | None:
+        """Cloud speech recognition, only when the user switched it on, is signed in and the app is online.
+        Returns None (use the offline model) on any problem."""
+        acc = self.cloud_accounts
+        if not (self.settings.get("stt.cloud_when_online", False) and acc and acc.configured and user_id):
+            return None
+        if self.conn.route()[0] != "online":
+            return None
+        t0 = time.time()
+        try:
+            text = acc.transcribe(user_id, wav)
+        except Exception as e:  # noqa: BLE001 - fall back to the offline model
+            log.warning("cloud speech recognition failed, using the offline model: %s", e)
+            return None
+        return {"text": text, "engine": "VoiceAssist cloud", "seconds": round(time.time() - t0, 2),
+                "duration": max(0.0, (len(wav) - 44) / 32000)}
+
+    def transcribe_only(self, wav: bytes, user_id=None) -> dict:
         """Speech -> text without answering: the window shows the words so the user can check them first."""
         samples, sr = audio.wav_to_float32(wav)
         if self.settings.get("privacy.save_recordings", False):
             (paths.recordings_dir() / time.strftime("rec-%Y%m%d-%H%M%S.wav")).write_bytes(wav)
-        r = self.stt.transcribe(samples, sr)
+        r = self._cloud_stt(wav, user_id) or self.stt.transcribe(samples, sr)
         return {"text": (r.get("text") or "").strip(), "engine": r.get("engine", ""), "seconds": r.get("seconds")}
 
     def start_turn(self, conv_id: str | None, wav: bytes | None = None, text: str | None = None,
@@ -343,6 +360,7 @@ class Engine:
             if turn.cancel.is_set():
                 turn.put(type="cancelled", stage="stt")
                 return
+            result = self._cloud_stt(wav, turn.user_id)
             if result is None:
                 try:
                     result = self.stt.transcribe(samples, sr)

@@ -222,7 +222,7 @@ def main(argv=None) -> int:
                     log.info("window closed")
                     break
             # Fallback for browsers that hand the window to an existing process:
-            if app.bye_at and time.time() - app.bye_at > 4 and app.last_ping < app.bye_at:
+            if app.bye_at and time.time() - app.bye_at > 8 and app.last_ping < app.bye_at:   # other windows answer within 8 s
                 log.info("window closed (beacon)")
                 break
             # Last resort (a crashed window): no ping for WINDOW_GONE_S of awake time. Pings come every 20 s, but a

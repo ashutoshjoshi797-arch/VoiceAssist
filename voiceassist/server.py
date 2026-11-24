@@ -340,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_transcribe(self, q):
         try:
-            self._json(self.app.engine.transcribe_only(self._body()))
+            self._json(self.app.engine.transcribe_only(self._body(), self.user["id"]))
         except STTError as e:
             self._err(400, str(e), e.hint)
         except Exception as e:
@@ -383,6 +383,17 @@ class Handler(BaseHTTPRequestHandler):
         if not self.app.history.exists(cid, self.user["id"]):
             return self._err(404, "conversation not found")
         self._json({"id": cid, "messages": self.app.history.messages(cid)})
+
+    def api_conversation_update(self, q, cid):
+        if not self.app.history.exists(cid, self.user["id"]):
+            return self._err(404, "conversation not found")
+        b = self._json_body()
+        try:
+            c = self.app.history.update(cid, title=b.get("title"), pinned=b.get("pinned"), archived=b.get("archived"),
+                                        unread=b.get("unread"))
+        except ValueError as e:
+            return self._err(400, str(e))
+        self._json({"ok": True, "conversation": c})
 
     def api_conversation_delete(self, q, cid):
         if not self.app.history.exists(cid, self.user["id"]):
@@ -478,6 +489,7 @@ ROUTES_RE = [
     (("GET", re.compile(r"/api/audio/([0-9a-f]{32})")), Handler.api_audio),
     (("GET", re.compile(r"/api/conversations/([0-9a-f]{12})")), Handler.api_conversation_get),
     (("DELETE", re.compile(r"/api/conversations/([0-9a-f]{12})")), Handler.api_conversation_delete),
+    (("POST", re.compile(r"/api/conversations/([0-9a-f]{12})")), Handler.api_conversation_update),
 ]
 
 

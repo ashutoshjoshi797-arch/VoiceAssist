@@ -55,6 +55,7 @@ DEFAULTS: dict[str, Any] = {
         "threads": 0,  # 0 = auto
         "provider": "cpu",  # cpu | cuda | directml | coreml
         "use_vad_trim": True,
+        "cloud_when_online": False,   # better recognition of names/accents: sends the recording to the VoiceAssist cloud
     },
     "tts": {
         "engine": "piper",  # piper | system | none

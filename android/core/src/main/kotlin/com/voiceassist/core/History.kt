@@ -7,6 +7,7 @@ import java.util.UUID
 
 /** Conversations stored as one JSON file each in [dir] (or only in memory when [persistent] is false). */
 class HistoryStore(private val dir: File?, val persistent: Boolean = dir != null) {
+    companion object { val FLAGS = listOf("pinned", "archived", "unread") }
     private val lock = Any()
     private val convs = LinkedHashMap<String, JSONObject>()
     private var nextMsgId = 1L
@@ -59,6 +60,7 @@ class HistoryStore(private val dir: File?, val persistent: Boolean = dir != null
         val id = nextMsgId++
         c.getJSONArray("messages").put(jsonOf("id" to id, "role" to role, "content" to content, "created" to now(), "meta" to meta))
         c.put("updated", now())
+        if (role == "assistant") c.put("unread", true) else if (role == "user") c.put("archived", false)
         if (role == "user" && c.getString("title") == "New conversation") {
             val t = content.trim().replace("\n", " ")
             c.put("title", if (t.length > 60) t.take(60) + "…" else t)
@@ -77,11 +79,27 @@ class HistoryStore(private val dir: File?, val persistent: Boolean = dir != null
     fun list(userId: String?, limit: Int = 200): JSONArray = synchronized(lock) {
         val out = JSONArray()
         convs.values.filter { userId == null || owner(it) == userId }
-            .sortedByDescending { it.getDouble("updated") }.take(limit).forEach {
+            .sortedWith(compareByDescending<JSONObject> { it.optBoolean("pinned") }.thenByDescending { it.getDouble("updated") })
+            .take(limit).forEach {
                 out.put(jsonOf("id" to it.getString("id"), "title" to it.getString("title"), "created" to it.getDouble("created"),
-                    "updated" to it.getDouble("updated"), "n" to it.getJSONArray("messages").length()))
+                    "updated" to it.getDouble("updated"), "n" to it.getJSONArray("messages").length(),
+                    "pinned" to it.optBoolean("pinned"), "archived" to it.optBoolean("archived"), "unread" to it.optBoolean("unread")))
             }
         out
+    }
+
+    /** Rename and/or set the pinned / archived / unread flags (only the keys present in [b]). */
+    fun update(cid: String, b: JSONObject): JSONObject = synchronized(lock) {
+        val c = convs[cid] ?: throw IllegalArgumentException("conversation not found")
+        if (b.has("title") && !b.isNull("title")) {
+            val t = b.optString("title").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ").take(80)
+            if (t.isEmpty()) throw IllegalArgumentException("The name can't be empty.")
+            c.put("title", t)
+        }
+        for (f in FLAGS) if (b.has(f) && !b.isNull(f)) c.put(f, b.optBoolean(f))
+        save(c)
+        jsonOf("id" to cid, "title" to c.getString("title"), "pinned" to c.optBoolean("pinned"),
+            "archived" to c.optBoolean("archived"), "unread" to c.optBoolean("unread"))
     }
 
     fun delete(cid: String) = synchronized(lock) {
